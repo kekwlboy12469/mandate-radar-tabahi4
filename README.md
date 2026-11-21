@@ -3,6 +3,8 @@
 
 **Fintech Solution | Neo4j Knowledge Graph**
 
+🔗 **Repository Link & Live Documentation**: [https://github.com/ninjuu19/mandate-radar-tabahi4](https://github.com/ninjuu19/mandate-radar-tabahi4)
+
 [![Python](https://img.shields.io/badge/Python-3.10+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.110+-009688?logo=fastapi)](https://fastapi.tiangolo.com/)
 [![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black)](https://react.dev/)
@@ -272,9 +274,9 @@ Follow these instructions to run the project locally.
 ### 1. Clone the Repository
 
 ```bash
-git clone https://github.com/sidddhhaarthhh/mandate-debit-tabahi4.git
+git clone https://github.com/ninjuu19/mandate-radar-tabahi4.git
 
-cd mandate-debit-tabahi4
+cd mandate-radar-tabahi4
 ```
 
 ### 2. Install Backend Dependencies
