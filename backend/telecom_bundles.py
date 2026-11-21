@@ -1,42 +1,48 @@
 """
-TELECOM & CREDIT CARD BUNDLE PLACEHOLDER DATA
-=====================================================
+Telecom & Credit Card Bundle Reference Data (Unverified Placeholders)
+=====================================================================
 IMPORTANT:
-Telecom (Jio, Airtel) and credit-card bundles (e.g., plans bundled with Disney+ Hotstar or Netflix)
-are NOT automatically inferable from a raw bank statement debit.
-These are modeled as Plan nodes. An INCLUDES relationship is created ONLY after the user
-explicitly selects and confirms their specific plan.
-DO NOT invent prices or inclusions; fill and verify this file with official carrier terms.
+Telecom plans (Jio, Airtel) and credit-card bundles (e.g. HDFC Infinia SmartBuy)
+CANNOT be automatically inferred from raw bank statement debits.
+These are modeled as Plan nodes. An INCLUDES relationship is created ONLY after
+the user explicitly selects and confirms their specific plan.
+
+All entries here have is_verified: False, confidence: 'user_confirmation_required'.
+DO NOT invent prices or inclusions; verify with official carrier terms.
 """
 
-# PLACEHOLDER: Telecom & Credit Card Plan Definitions
 TELECOM_CREDIT_CARD_PLANS = [
     {
-        "plan_id": "jio_prepaid_annual_hotstar",
-        "plan_name": "Jio Annual Entertainment Plan",
+        "plan_id": "jio_fiber_postpaid_entertainment",
+        "plan_name": "JioFiber Postpaid Entertainment Bonanza",
         "carrier_or_bank": "Reliance Jio",
-        "bundled_services": ["disney_hotstar"],
+        "tier": "postpaid_bundle",
+        "bundled_services": ["disney_hotstar", "sony_liv", "zee5", "jiocinema_premium"],
         "is_verified": False,
-        "source_url": "TODO: fill link", # e.g. https://www.jio.com/plans
-        "notes": "PLACEHOLDER: Verify if active plan includes mobile or all-device Hotstar subscription."
+        "confidence": "user_confirmation_required",
+        "source_url": "TODO: fill link", # e.g. https://www.jio.com/fiber/en-in/plans
+        "notes": "PLACEHOLDER: Requires user confirmation of active OTT add-on plan."
     },
     {
         "plan_id": "airtel_postpaid_infinity",
         "plan_name": "Airtel Postpaid Family / Infinity",
         "carrier_or_bank": "Bharti Airtel",
+        "tier": "family_postpaid",
         "bundled_services": ["amazon_prime", "disney_hotstar"],
         "is_verified": False,
-        "source_url": "TODO: fill link",
-        "notes": "PLACEHOLDER: Verify Airtel Thanks Platinum tier OTT bundle terms."
+        "confidence": "user_confirmation_required",
+        "source_url": "TODO: fill link", # e.g. https://www.airtel.in/postpaid/
+        "notes": "PLACEHOLDER: Requires user confirmation of Airtel Thanks Platinum rewards claim."
     },
     {
         "plan_id": "hdfc_infinia_smartbuy",
-        "plan_name": "HDFC Infinia Credit Card",
+        "plan_name": "HDFC Infinia Metal Credit Card",
         "carrier_or_bank": "HDFC Bank",
-        "bundled_services": ["club_marriott"],
+        "tier": "super_premium_card",
+        "bundled_services": ["times_prime"],
         "is_verified": False,
+        "confidence": "user_confirmation_required",
         "source_url": "TODO: fill link",
-        "notes": "PLACEHOLDER: Verify complimentary memberships attached to card."
+        "notes": "PLACEHOLDER: Requires user confirmation of active complimentary Times Prime membership."
     }
 ]
-

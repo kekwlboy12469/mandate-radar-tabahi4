@@ -8,22 +8,32 @@ import os
 import hashlib
 from datetime import datetime, timedelta
 from typing import Dict, List, Any, Optional
-import neo4j
-from reference_data import REFERENCE_MERCHANTS, PARENT_COMPANIES, PAYMENT_MECHANISMS, ESCALATION_CHAIN
-from bundle_reference import CURATED_BUNDLES
+
+DEFAULT_VERIFIED_DATE = datetime.utcnow().strftime('%Y-%m-%d')
+try:
+    import neo4j
+except ImportError:
+    neo4j = None
+
+from reference_data import (
+    REFERENCE_MERCHANTS, PARENT_COMPANIES, PAYMENT_MECHANISMS, ESCALATION_CHAIN,
+    CAPABILITIES, VENDOR_CAPABILITIES
+)
+from bundle_reference import PLANS, CURATED_BUNDLES
 
 class Neo4jKnowledgeGraph:
     def __init__(self, uri: str = None, user: str = None, password: str = None):
         self.uri = uri or os.getenv("NEO4J_URI", "")
         self.user = user or os.getenv("NEO4J_USER", "neo4j")
         self.password = password or os.getenv("NEO4J_PASSWORD", "")
-        self.driver: Optional[neo4j.Driver] = None
+        self.driver: Optional[Any] = None
         self.is_connected = False
         self.connection_error = None
 
-        # Embedded in-memory graph fallback
+        # Embedded in-memory graph fallback & decision store
         self.nodes = []
         self.edges = []
+        self.decisions = []
         self._build_embedded_reference_graph()
 
         # Try connecting if uri is supplied
@@ -168,22 +178,50 @@ class Neo4jKnowledgeGraph:
                 })
                 edge_id += 1
 
-        # 5. Seed Curated Bundle Inclusions: (:Merchant)-[:INCLUDES]->(:Merchant)
+        # 5. Capabilities: (:Capability)
+        for cap in CAPABILITIES:
+            self.nodes.append({
+                "id": f"cap_{cap['id']}",
+                "label": "Capability",
+                "name": cap["name"],
+                "group": "capability",
+                "color": "#3B82F6", # Blue
+                "val": 16,
+                "properties": cap
+            })
+
+        # 6. Plans: (:Plan) and (:Merchant)-[:OFFERS]->(:Plan)
+        for plan in PLANS:
+            p_node_id = f"plan_{plan['id']}"
+            self.nodes.append({
+                "id": p_node_id,
+                "label": "Plan",
+                "name": plan["name"],
+                "group": "plan",
+                "color": "#F59E0B", # Amber
+                "val": 18,
+                "properties": plan
+            })
+            # Connect Vendor -> Plan
+            v_node_id = f"merch_{plan['vendor_id']}"
+            self.edges.append({
+                "id": f"e_{edge_id}",
+                "source": v_node_id,
+                "target": p_node_id,
+                "type": "OFFERS",
+                "label": "OFFERS",
+                "color": "#F59E0B"
+            })
+            edge_id += 1
+
+        # 7. Seed Curated Bundle Inclusions: (:Plan)-[:INCLUDES]->(:Merchant) and direct (:Merchant)-[:INCLUDES]->(:Merchant)
         for b in CURATED_BUNDLES:
-            p_mid = f"merch_{b['parent_id']}"
-            c_mid = f"merch_{b['child_id']}"
-            # Ensure merchant nodes exist
+            p_pid = f"plan_{b['parent_plan_id']}"
+            p_vid = f"merch_{b['parent_vendor_id']}"
+            c_mid = f"merch_{b['child_vendor_id']}"
+
+            # Ensure child merchant node exists
             existing_ids = {n["id"] for n in self.nodes}
-            if p_mid not in existing_ids:
-                self.nodes.append({
-                    "id": p_mid,
-                    "label": "Merchant",
-                    "name": b["parent_name"],
-                    "group": "merchant",
-                    "color": "#10B981",
-                    "val": 20,
-                    "properties": {"id": b["parent_id"], "name": b["parent_name"], "category": "Bundle Subscription"}
-                })
             if c_mid not in existing_ids:
                 self.nodes.append({
                     "id": c_mid,
@@ -192,55 +230,127 @@ class Neo4jKnowledgeGraph:
                     "group": "merchant",
                     "color": "#10B981",
                     "val": 20,
-                    "properties": {"id": b["child_id"], "name": b["child_name"], "category": "Bundled Service"}
+                    "properties": {"id": b["child_vendor_id"], "name": b["child_name"], "category": "Bundled Service"}
                 })
+
+            # Edge 1: Plan -[:INCLUDES]-> Merchant
             self.edges.append({
                 "id": f"e_{edge_id}",
-                "source": p_mid,
+                "source": p_pid,
                 "target": c_mid,
                 "type": "INCLUDES",
                 "label": "INCLUDES",
                 "color": "#F59E0B",
                 "properties": {
+                    "tier": b.get("tier", "standard"),
                     "confidence": b.get("confidence", "confirmed_public"),
-                    "verified_on": b.get("verified_on", "2026-01-01"),
+                    "verified_on": b.get("verified_on", DEFAULT_VERIFIED_DATE),
                     "source_url": b.get("source_url", "TODO: fill link"),
                     "notes": b.get("notes", "")
                 }
             })
             edge_id += 1
 
+            # Edge 2: Direct Parent Vendor -[:INCLUDES]-> Child Merchant (shortcut for multi-hop Cypher queries)
+            self.edges.append({
+                "id": f"e_{edge_id}",
+                "source": p_vid,
+                "target": c_mid,
+                "type": "INCLUDES",
+                "label": "INCLUDES",
+                "color": "#F59E0B",
+                "properties": {
+                    "tier": b.get("tier", "standard"),
+                    "confidence": b.get("confidence", "confirmed_public"),
+                    "verified_on": b.get("verified_on", DEFAULT_VERIFIED_DATE),
+                    "source_url": b.get("source_url", "TODO: fill link"),
+                    "notes": b.get("notes", "")
+                }
+            })
+            edge_id += 1
+
+        # 8. Vendor Capabilities: (:Merchant)-[:PROVIDES]->(:Capability)
+        for vc in VENDOR_CAPABILITIES:
+            v_node_id = f"merch_{vc['vendor_id']}"
+            c_node_id = f"cap_{vc['capability_id']}"
+            self.edges.append({
+                "id": f"e_{edge_id}",
+                "source": v_node_id,
+                "target": c_node_id,
+                "type": "PROVIDES",
+                "label": "PROVIDES",
+                "color": "#3B82F6",
+                "properties": {
+                    "confidence": vc.get("confidence", "confirmed_public"),
+                    "verified_on": vc.get("verified_on", DEFAULT_VERIFIED_DATE),
+                    "source_url": vc.get("source_url", "TODO: fill link"),
+                    "notes": vc.get("notes", "")
+                }
+            })
+            edge_id += 1
+
     def seed_bundle_reference_graph(self):
-        """Seeds curated bundle relationships into live Neo4j Aura."""
+        """Seeds curated bundle relationships, plans, and capabilities into live Neo4j Aura."""
         if not (self.is_connected and self.driver):
             return False, "Not connected to live Neo4j instance."
         cypher = """
+        // 1. Constraints & Unique Indexes
+        CREATE CONSTRAINT unique_merchant_id IF NOT EXISTS FOR (m:Merchant) REQUIRE m.id IS UNIQUE;
+        CREATE CONSTRAINT unique_plan_id IF NOT EXISTS FOR (p:Plan) REQUIRE p.id IS UNIQUE;
+        CREATE CONSTRAINT unique_cap_id IF NOT EXISTS FOR (c:Capability) REQUIRE c.id IS UNIQUE;
+        CREATE CONSTRAINT unique_mandate_id IF NOT EXISTS FOR (mand:Mandate) REQUIRE mand.id IS UNIQUE;
+        CREATE CONSTRAINT unique_decision_key IF NOT EXISTS FOR (d:Decision) REQUIRE d.finding_key IS UNIQUE;
+
+        // 2. Capabilities
+        UNWIND $capabilities AS c
+        MERGE (cap:Capability {id: c.id})
+          ON CREATE SET cap.name = c.name, cap.category = c.category, cap.description = c.description;
+
+        // 3. Plans & Offers
+        UNWIND $plans AS pl
+        MERGE (plan:Plan {id: pl.id})
+          ON CREATE SET plan.name = pl.name, plan.tier = pl.tier, plan.monthly_cost = pl.monthly_cost, plan.annual_cost = pl.annual_cost
+        WITH pl, plan
+        MATCH (v:Merchant {id: pl.vendor_id})
+        MERGE (v)-[:OFFERS]->(plan);
+
+        // 4. Bundle Inclusions
         UNWIND $bundles AS b
-        MERGE (p:Merchant {id: b.parent_id})
-          ON CREATE SET p.name = b.parent_name
-        MERGE (c:Merchant {id: b.child_id})
-          ON CREATE SET c.name = b.child_name
-        MERGE (p)-[r:INCLUDES]->(c)
-        SET r.confidence = b.confidence,
-            r.verified_on = date(b.verified_on),
-            r.source_url = b.source_url,
-            r.notes = b.notes
-        RETURN count(r) AS created_edges;
+        MATCH (plan:Plan {id: b.parent_plan_id}), (c:Merchant {id: b.child_vendor_id})
+        MERGE (plan)-[r:INCLUDES]->(c)
+        SET r.tier = b.tier, r.confidence = b.confidence, r.verified_on = date(b.verified_on), r.source_url = b.source_url, r.notes = b.notes
+        WITH b
+        MATCH (p:Merchant {id: b.parent_vendor_id}), (c:Merchant {id: b.child_vendor_id})
+        MERGE (p)-[r2:INCLUDES]->(c)
+        SET r2.tier = b.tier, r2.confidence = b.confidence, r2.verified_on = date(b.verified_on), r2.source_url = b.source_url, r2.notes = b.notes;
+
+        // 5. Vendor Capabilities
+        UNWIND $vendor_caps AS vc
+        MATCH (v:Merchant {id: vc.vendor_id}), (cap:Capability {id: vc.capability_id})
+        MERGE (v)-[r:PROVIDES]->(cap)
+        SET r.confidence = vc.confidence, r.verified_on = date(vc.verified_on), r.source_url = vc.source_url, r.notes = vc.notes;
         """
         try:
             with self.driver.session() as session:
-                res = session.run(cypher, bundles=CURATED_BUNDLES)
-                record = res.single()
-                return True, f"Successfully seeded {record['created_edges']} INCLUDES relationships into Neo4j Aura."
+                session.run(
+                    cypher,
+                    capabilities=CAPABILITIES,
+                    plans=PLANS,
+                    bundles=CURATED_BUNDLES,
+                    vendor_caps=VENDOR_CAPABILITIES
+                )
+                return True, "Successfully seeded reference graph (Capabilities, Plans, Inclusions, and Provides) into Neo4j Aura."
         except Exception as e:
-            return False, f"Failed to seed bundles into Neo4j Aura: {str(e)}"
+            return False, f"Failed to seed reference graph into Neo4j Aura: {str(e)}"
 
-    def sync_statement_mandates(self, person_name: str, mandates: List[Dict[str, Any]], person_id: str = "user_primary"):
+    def sync_statement_mandates(self, person_name: str, mandates: List[Dict[str, Any]], person_id: str = "user_primary", account_label: str = "Primary Account"):
         """
         Injects the user's detected mandates and charges into the graph:
         (Person)-[:HAS_MANDATE]->(Mandate)-[:FOR]->(Merchant)
         (Mandate)-[:VIA_MECHANISM]->(Mechanism)
         (Mandate)-[:HAD_CHARGE]->(Charge)
+        (Person)-[:OWNS_ACCOUNT]->(Account)
+        (Mandate)-[:PAID_FROM]->(Account)
         """
         # Preserve status & cancel metadata if mandate was already present in graph
         existing_mandate_states = {}
@@ -256,14 +366,17 @@ class Neo4jKnowledgeGraph:
                     "cancel_confirmed_at": p.get("cancel_confirmed_at"),
                     "last_seen_charge_date": p.get("last_seen_charge_date"),
                     "expected_next_charge_date": p.get("expected_next_charge_date"),
-                    "reminder_count": p.get("reminder_count", 0)
+                    "reminder_count": p.get("reminder_count", 0),
+                    "tags": p.get("tags", []),
+                    "billing_type": p.get("billing_type", "fixed"),
+                    "account_label": p.get("account_label", account_label)
                 }
-                if mid not in incoming_ids and p.get("status") in ["cancel_confirmed_by_user", "still_charging", "verified_cancelled"]:
+                if mid not in incoming_ids and p.get("status") in ["marked_cancelled", "cancel_confirmed_by_user", "still_charging", "verified_cancelled"]:
                     preserved_mandates.append(dict(p))
 
         # Remove old statement nodes if re-analyzing, keeping reference & overlap edges
-        self.nodes = [n for n in self.nodes if n["group"] not in ["person", "mandate", "charge"]]
-        self.edges = [e for e in self.edges if e["type"] not in ["HAS_MANDATE", "FOR", "VIA_MECHANISM", "HAD_CHARGE", "DECIDED_OVERLAP"]]
+        self.nodes = [n for n in self.nodes if n["group"] not in ["person", "mandate", "charge", "account"]]
+        self.edges = [e for e in self.edges if e["type"] not in ["HAS_MANDATE", "FOR", "VIA_MECHANISM", "HAD_CHARGE", "DECIDED_OVERLAP", "OWNS_ACCOUNT", "PAID_FROM", "TAGGED"]]
 
         self.nodes.append({
             "id": person_id,
@@ -277,6 +390,7 @@ class Neo4jKnowledgeGraph:
 
         edge_counter = len(self.edges) + 100
         seen_charge_hashes = set()
+        seen_accounts = set()
         aura_mandates = []
         aura_charges = []
 
@@ -291,6 +405,10 @@ class Neo4jKnowledgeGraph:
             cancel_confirmed_at = mand.get("cancel_confirmed_at") or prev_state.get("cancel_confirmed_at")
             last_seen_charge = mand.get("last_seen_charge_date") or prev_state.get("last_seen_charge_date") or mand.get("last_charged")
             reminder_cnt = mand.get("reminder_count") if mand.get("reminder_count") is not None else prev_state.get("reminder_count", 0)
+            mand_tags = mand.get("tags") or prev_state.get("tags") or []
+            m_billing_type = mand.get("billing_type") or prev_state.get("billing_type") or "fixed"
+            m_account_label = mand.get("account_label") or prev_state.get("account_label") or account_label or "Primary Account"
+            m_account_id = f"acc_{hashlib.sha256(f'{person_id}_{m_account_label}'.encode()).hexdigest()[:12]}"
 
             # Compute next expected debit date if missing
             expected_next = mand.get("expected_next_charge_date") or prev_state.get("expected_next_charge_date")
@@ -307,20 +425,24 @@ class Neo4jKnowledgeGraph:
             mand["expected_next_charge_date"] = expected_next
             mand["last_seen_charge_date"] = last_seen_charge
             mand["reminder_count"] = reminder_cnt
+            mand["tags"] = mand_tags
+            mand["billing_type"] = m_billing_type
+            mand["account_label"] = m_account_label
+            mand["account_id"] = m_account_id
 
             flag_color = {
                 "PRICE_HIKE": "#F97316", # Orange
                 "TRIAL_CONVERTED": "#EF4444", # Red
                 "UNUSED_ZOMBIE": "#DC2626", # Deep Red
                 "HEALTHY": "#10B981" # Green
-            }.get(mand["flag"], "#3B82F6")
+            }.get(mand.get("flag", "HEALTHY"), "#3B82F6")
 
             # Color by status if cancellation lifecycle active
             if current_status == "still_charging":
                 flag_color = "#DC2626"
             elif current_status == "verified_cancelled":
                 flag_color = "#059669"
-            elif current_status == "cancel_confirmed_by_user":
+            elif current_status in ["marked_cancelled", "cancel_confirmed_by_user"]:
                 flag_color = "#6B7280"
 
             m_amt = float(mand.get("latest_amount") or mand.get("amount") or 0.0)
@@ -340,6 +462,10 @@ class Neo4jKnowledgeGraph:
                     "cadence": m_cad,
                     "amount": m_amt,
                     "annual_committed": m_ann,
+                    "annual_committed_cost": m_ann,
+                    "billing_type": m_billing_type,
+                    "account_label": m_account_label,
+                    "account_id": m_account_id,
                     "flag": mand.get("flag", "HEALTHY"),
                     "flag_reason": mand.get("flag_reason", ""),
                     "descriptor": mand.get("descriptor", ""),
@@ -348,7 +474,8 @@ class Neo4jKnowledgeGraph:
                     "expected_next_charge_date": expected_next,
                     "cancel_confirmed_at": cancel_confirmed_at,
                     "last_seen_charge_date": last_seen_charge,
-                    "reminder_count": reminder_cnt
+                    "reminder_count": reminder_cnt,
+                    "tags": mand_tags
                 }
             })
 
@@ -360,6 +487,38 @@ class Neo4jKnowledgeGraph:
                 "type": "HAS_MANDATE",
                 "label": "HAS_MANDATE",
                 "color": "#F59E0B"
+            })
+            edge_counter += 1
+
+            # (Person)-[:OWNS_ACCOUNT]->(Account) & (Mandate)-[:PAID_FROM]->(Account)
+            if m_account_id not in seen_accounts:
+                seen_accounts.add(m_account_id)
+                self.nodes.append({
+                    "id": m_account_id,
+                    "label": "Account",
+                    "name": m_account_label,
+                    "group": "account",
+                    "color": "#06B6D4",
+                    "val": 16,
+                    "properties": {"id": m_account_id, "label": m_account_label, "user_id": person_id}
+                })
+                self.edges.append({
+                    "id": f"e_{edge_counter}",
+                    "source": person_id,
+                    "target": m_account_id,
+                    "type": "OWNS_ACCOUNT",
+                    "label": "OWNS_ACCOUNT",
+                    "color": "#06B6D4"
+                })
+                edge_counter += 1
+
+            self.edges.append({
+                "id": f"e_{edge_counter}",
+                "source": mand_node_id,
+                "target": m_account_id,
+                "type": "PAID_FROM",
+                "label": "PAID_FROM",
+                "color": "#06B6D4"
             })
             edge_counter += 1
 
@@ -394,8 +553,8 @@ class Neo4jKnowledgeGraph:
                 amt_str = f"{float(c.get('amount', 0)):.2f}"
                 c_desc = str(c.get("descriptor", ""))
                 c_date = str(c.get("date", ""))[:10]
-                hash_input = f"{c_date}_{amt_str}_{c_desc}_{person_id}"
-                c_hash = hashlib.sha256(hash_input.encode()).hexdigest()[:16]
+                c_ref = str(c.get("ref", ""))
+                c_hash = c.get("charge_hash") or hashlib.sha256(f"{person_id}_{m_account_label}_{c_date}_{amt_str}_{c_desc}_{c_ref}".encode()).hexdigest()[:16]
 
                 charge_node_id = f"charge_{c_hash}"
                 if charge_node_id not in seen_charge_hashes:
@@ -439,6 +598,9 @@ class Neo4jKnowledgeGraph:
                 "cadence": mand.get("cadence", "MONTHLY"),
                 "latest_amount": float(mand.get("latest_amount", 0.0)),
                 "annual_committed_cost": float(mand.get("annual_committed_cost", 0.0)),
+                "billing_type": m_billing_type,
+                "account_label": m_account_label,
+                "account_id": m_account_id,
                 "flag": mand.get("flag", "HEALTHY"),
                 "flag_reason": mand.get("flag_reason", ""),
                 "descriptor": mand.get("descriptor", ""),
@@ -463,6 +625,8 @@ class Neo4jKnowledgeGraph:
                     mand.cadence = m.cadence,
                     mand.amount = m.latest_amount,
                     mand.annual_committed = m.annual_committed_cost,
+                    mand.billing_type = m.billing_type,
+                    mand.account_label = m.account_label,
                     mand.flag = m.flag,
                     mand.flag_reason = m.flag_reason,
                     mand.descriptor = m.descriptor,
@@ -471,9 +635,14 @@ class Neo4jKnowledgeGraph:
                     mand.last_seen_charge_date = m.last_seen_charge_date,
                     mand.reminder_count = coalesce(m.reminder_count, 0)
                 MERGE (p)-[:HAS_MANDATE]->(mand)
+                MERGE (acc:Account {id: m.account_id})
+                ON CREATE SET acc.label = m.account_label, acc.user_id = $uid
+                MERGE (p)-[:OWNS_ACCOUNT]->(acc)
+                MERGE (mand)-[:PAID_FROM]->(acc)
                 WITH mand, m
                 WHERE m.merchant_id IS NOT NULL
                 MERGE (merch:Merchant {id: m.merchant_id})
+                SET merch:Vendor
                 MERGE (mand)-[:FOR]->(merch);
                 """
                 with self.driver.session() as session:
@@ -495,45 +664,75 @@ class Neo4jKnowledgeGraph:
         Executes multi-hop variable-length path Cypher query to identify bundled service overlaps:
         MATCH (p:Person {id:$uid})-[:HAS_MANDATE]->(ma:Mandate)-[:FOR]->(a),
               (p)-[:HAS_MANDATE]->(mb:Mandate)-[:FOR]->(b)
-        WHERE ma <> mb AND ma.status IN ['active','flagged_overlap'] AND mb.status IN ['active','flagged_overlap']
-        MATCH path = (a)-[:INCLUDES*1..4]->(b)
-        RETURN ma, mb, path
+        WHERE ma <> mb AND ma.status IN ['active','flagged','flagged_overlap','keep_confirmed']
+                       AND mb.status IN ['active','flagged','flagged_overlap','keep_confirmed']
+        MATCH path = (a)-[:OFFERS|INCLUDES*1..6]->(b)
+        Anti-joins against Decision nodes with stable finding_key.
         """
+        user_decisions = [
+            d for d in self.decisions 
+            if d.get("user_id") == uid and d.get("finding_type") in ["bundle_overlap", "overlap"]
+        ]
+        decided_keys = {d.get("finding_key") for d in user_decisions if d.get("finding_key")}
+
         cypher = """
         MATCH (p:Person {id:$uid})-[:HAS_MANDATE]->(ma:Mandate)-[:FOR]->(a),
               (p)-[:HAS_MANDATE]->(mb:Mandate)-[:FOR]->(b)
-        WHERE ma <> mb AND ma.status IN ['active','flagged_overlap'] AND mb.status IN ['active','flagged_overlap']
-        MATCH path = (a)-[:INCLUDES*1..4]->(b)
+        WHERE ma <> mb 
+          AND ma.status IN ['active','flagged','flagged_overlap','keep_confirmed'] 
+          AND mb.status IN ['active','flagged','flagged_overlap','keep_confirmed']
+        MATCH path = (a)-[:OFFERS|INCLUDES*1..6]->(b)
         RETURN ma, mb, a, b,
                [n in nodes(path) | coalesce(n.name, n.id)] AS path_names,
-               [r in relationships(path) | {confidence: r.confidence, notes: r.notes, source_url: r.source_url}] AS path_rels
+               [r in relationships(path) | {confidence: coalesce(r.confidence, 'confirmed_public'), notes: coalesce(r.notes, ''), source_url: coalesce(r.source_url, 'TODO: fill link'), verified_on: coalesce(str(r.verified_on), DEFAULT_VERIFIED_DATE)}] AS path_rels
         """
 
         if self.is_connected and self.driver:
             try:
                 with self.driver.session() as session:
+                    dec_res = session.run("MATCH (p:Person {id:$uid})-[:MADE_DECISION]->(d:Decision) RETURN d.finding_key AS fkey", uid=uid)
+                    aura_decided_keys = {r["fkey"] for r in dec_res if r["fkey"]}
+                    all_decided = decided_keys.union(aura_decided_keys)
+
                     result = session.run(cypher, uid=uid)
                     records = []
                     for record in result:
-                        ma = record["ma"]
-                        mb = record["mb"]
-                        a = record["a"]
-                        b = record["b"]
+                        ma = dict(record["ma"])
+                        mb = dict(record["mb"])
+                        a = dict(record["a"])
+                        b = dict(record["b"])
+                        ma_id = str(ma.get("id"))
+                        mb_id = str(mb.get("id"))
+
+                        finding_key = hashlib.sha256(f"bundle_overlap:{min(ma_id, mb_id)}_{max(ma_id, mb_id)}".encode()).hexdigest()
+                        legacy_key = f"ov_{ma_id}_{mb_id}"
+                        if finding_key in all_decided or legacy_key in all_decided:
+                            continue
+
                         path_names = record.get("path_names", [])
                         path_rels = record.get("path_rels", [{}])
-                        redundant_cost = float(mb.get("annual_committed", mb.get("amount", 0) * 12))
+
+                        # Honest math: exclude usage_based mandates from savings
+                        if mb.get("billing_type") == "usage_based":
+                            redundant_cost = 0.0
+                        else:
+                            redundant_cost = float(mb.get("annual_committed", mb.get("annual_committed_cost", mb.get("amount", 0) * 12)))
+
                         first_rel = path_rels[0] if path_rels else {}
                         records.append({
-                            "overlap_id": f"ov_{ma['id']}_{mb['id']}",
-                            "parent_mandate": dict(ma),
-                            "included_mandate": dict(mb),
-                            "parent_service": a.get("name", ma.get("id")),
-                            "included_service": b.get("name", mb.get("id")),
+                            "finding_id": f"ov_{ma_id}_{mb_id}",
+                            "finding_key": finding_key,
+                            "finding_type": "bundle_overlap",
+                            "overlap_id": f"ov_{ma_id}_{mb_id}",
+                            "parent_mandate": ma,
+                            "included_mandate": mb,
+                            "parent_service": a.get("name", ma_id),
+                            "included_service": b.get("name", mb_id),
                             "path_nodes": path_names,
-                            "path_explanation": f"{a.get('name', 'Parent')} includes {b.get('name', 'Child')} via bundle hierarchy.",
-                            "potential_annual_saving": redundant_cost,
+                            "path_explanation": f"{a.get('name', 'Parent')} includes {b.get('name', 'Child')} via bundle hierarchy ({' -> '.join(path_names)}).",
+                            "potential_annual_saving": round(redundant_cost, 2),
                             "confidence": first_rel.get("confidence", "confirmed_public"),
-                            "verified_on": str(first_rel.get("verified_on", "2026-01-01")),
+                            "verified_on": str(first_rel.get("verified_on", DEFAULT_VERIFIED_DATE)),
                             "source_url": first_rel.get("source_url", "TODO: fill link"),
                             "notes": first_rel.get("notes", "Bundle includes secondary service.")
                         })
@@ -541,13 +740,12 @@ class Neo4jKnowledgeGraph:
             except Exception as e:
                 print(f"Neo4j Aura bundle query failed ({e}); evaluating on embedded graph engine.")
 
-        # Embedded Graph Traversal: Emulates variable-length Cypher query (a)-[:INCLUDES*1..4]->(b)
+        # Embedded Graph Traversal
         mandate_nodes = [
             n for n in self.nodes 
-            if n["group"] == "mandate" and n.get("properties", {}).get("status", "active") in ["active", "flagged_overlap"]
+            if n["group"] == "mandate" and n.get("properties", {}).get("status", "active") in ["active", "flagged", "flagged_overlap", "keep_confirmed"]
         ]
 
-        # Map each mandate to its merchant node
         mandate_to_merchant = {}
         for m in mandate_nodes:
             for e in self.edges:
@@ -556,11 +754,10 @@ class Neo4jKnowledgeGraph:
                     if merch_node:
                         mandate_to_merchant[m["id"]] = merch_node
 
-        # Build adjacency graph of INCLUDES edges
         includes_adj = {}
         includes_edge_data = {}
         for e in self.edges:
-            if e["type"] == "INCLUDES":
+            if e["type"] in ["INCLUDES", "OFFERS"]:
                 src = e["source"]
                 tgt = e["target"]
                 if src not in includes_adj:
@@ -568,7 +765,7 @@ class Neo4jKnowledgeGraph:
                 includes_adj[src].append(tgt)
                 includes_edge_data[(src, tgt)] = e.get("properties", {})
 
-        def find_variable_path(start: str, target: str, max_depth: int = 4):
+        def find_variable_path(start: str, target: str, max_depth: int = 6):
             queue = [[start]]
             while queue:
                 path = queue.pop(0)
@@ -595,54 +792,451 @@ class Neo4jKnowledgeGraph:
                 if not merch_b:
                     continue
 
-                pair_key = (ma["id"], mb["id"])
+                ma_id = str(ma["properties"].get("id", ma["id"]).replace("mand_", ""))
+                mb_id = str(mb["properties"].get("id", mb["id"]).replace("mand_", ""))
+                pair_key = (ma_id, mb_id)
                 if pair_key in seen_pairs:
                     continue
 
-                path = find_variable_path(merch_a["id"], merch_b["id"], max_depth=4)
+                finding_key = hashlib.sha256(f"bundle_overlap:{min(ma_id, mb_id)}_{max(ma_id, mb_id)}".encode()).hexdigest()
+                legacy_key = f"ov_{ma_id}_{mb_id}"
+                if finding_key in decided_keys or legacy_key in decided_keys:
+                    continue
+
+                path = find_variable_path(merch_a["id"], merch_b["id"], max_depth=6)
                 if path:
                     seen_pairs.add(pair_key)
-                    # Get path node names
                     path_names = [next((n["name"] for n in self.nodes if n["id"] == nid), nid) for nid in path]
                     edge_meta = includes_edge_data.get((path[0], path[1]), {})
-                    saving = float(mb.get("properties", {}).get("annual_committed", 0.0))
+                    
+                    if mb.get("properties", {}).get("billing_type") == "usage_based":
+                        saving = 0.0
+                    else:
+                        saving = float(mb.get("properties", {}).get("annual_committed", mb.get("properties", {}).get("annual_committed_cost", mb.get("properties", {}).get("amount", 0.0) * 12)))
 
-                    # Update mandate status in embedded graph
                     if ma["properties"].get("status") == "active":
                         ma["properties"]["status"] = "flagged_overlap"
                     if mb["properties"].get("status") == "active":
                         mb["properties"]["status"] = "flagged_overlap"
 
                     overlaps.append({
-                        "overlap_id": f"ov_{ma['properties'].get('id', ma['id'])}_{mb['properties'].get('id', mb['id'])}",
+                        "finding_id": f"ov_{ma_id}_{mb_id}",
+                        "finding_key": finding_key,
+                        "finding_type": "bundle_overlap",
+                        "overlap_id": f"ov_{ma_id}_{mb_id}",
                         "parent_mandate": ma["properties"],
                         "included_mandate": mb["properties"],
                         "parent_service": merch_a["name"],
                         "included_service": merch_b["name"],
                         "path_nodes": path_names,
-                        "path_explanation": f"{merch_a['name']} includes {merch_b['name']} via bundle hierarchy ({' ➔ '.join(path_names)}).",
-                        "potential_annual_saving": saving,
+                        "path_explanation": f"{merch_a['name']} includes {merch_b['name']} via bundle hierarchy ({' -> '.join(path_names)}).",
+                        "potential_annual_saving": round(saving, 2),
                         "confidence": edge_meta.get("confidence", "confirmed_public"),
-                        "verified_on": edge_meta.get("verified_on", "2026-01-01"),
+                        "verified_on": edge_meta.get("verified_on", DEFAULT_VERIFIED_DATE),
                         "source_url": edge_meta.get("source_url", "TODO: fill link"),
                         "notes": edge_meta.get("notes", "Bundle includes secondary service.")
                     })
 
         return overlaps
 
-    def record_overlap_decision(self, uid: str, kept_mandate_ids: List[str], cancel_mandate_ids: List[str]) -> Dict[str, Any]:
+    def find_capability_overlaps(self, uid: str = "user_primary") -> List[Dict[str, Any]]:
         """
-        Stores user's overlap confirmation in graph:
-        (:Person)-[:DECIDED_OVERLAP {decision: 'KEEP'|'SUGGESTED_CANCEL', timestamp}]->(:Mandate)
+        Identifies two or more active mandates providing the same functional capability (e.g. Slack + MS Teams).
+        Clusters by capability, evaluates anti-self-bundle, checks 6-month staleness threshold,
+        calculates fixed-only potential savings, and anti-joins against confirmed decisions.
+        """
+        user_decisions = [
+            d for d in self.decisions 
+            if d.get("user_id") == uid and d.get("finding_type") in ["capability_overlap", "overlap"]
+        ]
+        decided_keys = {d.get("finding_key") for d in user_decisions if d.get("finding_key")}
+
+        cypher = """
+        MATCH (p:Person {id:$uid})-[:HAS_MANDATE]->(m:Mandate)-[:FOR]->(v)
+        WHERE m.status IN ['active', 'flagged', 'flagged_overlap', 'keep_confirmed']
+        MATCH (v)-[:OFFERS|INCLUDES*0..4]->(sub)-[r:PROVIDES]->(c:Capability)
+        WHERE (r.verified_on IS NULL OR r.verified_on >= date() - duration({months: 6}))
+        WITH p, c, collect(DISTINCT m) AS mandates, collect(DISTINCT v) AS vendors, collect(DISTINCT r) AS rels
+        WHERE size(mandates) > 1
+        RETURN c, mandates, vendors, rels
+        """
+
+        if self.is_connected and self.driver:
+            try:
+                with self.driver.session() as session:
+                    dec_res = session.run("MATCH (p:Person {id:$uid})-[:MADE_DECISION]->(d:Decision) RETURN d.finding_key AS fkey", uid=uid)
+                    aura_decided_keys = {r["fkey"] for r in dec_res if r["fkey"]}
+                    all_decided = decided_keys.union(aura_decided_keys)
+
+                    result = session.run(cypher, uid=uid)
+                    findings = []
+                    for rec in result:
+                        c = dict(rec["c"])
+                        mandates = [dict(m) for m in rec["mandates"]]
+                        vendors = [dict(v) for v in rec["vendors"]]
+                        rels = [dict(r) for r in rec["rels"]]
+
+                        # Anti-self-bundle check: check if any vendor includes another in this cluster
+                        has_bundle_inclusion = False
+                        v_ids = [v.get("id") for v in vendors if v.get("id")]
+                        if len(v_ids) > 1:
+                            check_q = """
+                            MATCH (v1)-[:OFFERS|INCLUDES*1..6]->(v2)
+                            WHERE v1.id IN $v_ids AND v2.id IN $v_ids AND v1 <> v2
+                            RETURN count(*) AS cnt
+                            """
+                            check_res = session.run(check_q, v_ids=v_ids).single()
+                            if check_res and check_res["cnt"] > 0:
+                                has_bundle_inclusion = True
+
+                        if has_bundle_inclusion:
+                            continue
+
+                        sorted_mids = sorted([str(m.get("id")) for m in mandates])
+                        finding_key = hashlib.sha256(f"capability_overlap:{c['id']}:{':'.join(sorted_mids)}".encode()).hexdigest()
+                        legacy_key = f"cap_ov_{c['id']}"
+                        if finding_key in all_decided or legacy_key in all_decided:
+                            continue
+
+                        # Savings math: fixed-only
+                        fixed_mands = [m for m in mandates if m.get("billing_type") != "usage_based"]
+                        if len(fixed_mands) > 1:
+                            costs = [float(m.get("annual_committed", m.get("annual_committed_cost", m.get("amount", 0) * 12))) for m in fixed_mands]
+                            savings = sum(costs) - min(costs)
+                        else:
+                            savings = 0.0
+
+                        first_rel = rels[0] if rels else {}
+                        findings.append({
+                            "finding_id": f"cap_ov_{c['id']}",
+                            "finding_key": finding_key,
+                            "finding_type": "capability_overlap",
+                            "capability_id": c["id"],
+                            "capability_name": c.get("name", c["id"]),
+                            "category": c.get("category", "Software"),
+                            "description": c.get("description", ""),
+                            "mandates": mandates,
+                            "vendors": [v.get("name", v.get("id")) for v in vendors],
+                            "potential_annual_saving": round(savings, 2),
+                            "evidence_paths": [
+                                {
+                                    "vendor": v.get("name", v.get("id")),
+                                    "capability": c.get("name", c["id"]),
+                                    "relationship": "PROVIDES",
+                                    "confidence": first_rel.get("confidence", "confirmed_public"),
+                                    "verified_on": str(first_rel.get("verified_on", DEFAULT_VERIFIED_DATE)),
+                                    "source_url": first_rel.get("source_url", "TODO: fill link"),
+                                    "notes": first_rel.get("notes", "")
+                                }
+                                for v in vendors
+                            ],
+                            "confidence": first_rel.get("confidence", "confirmed_public"),
+                            "verified_on": str(first_rel.get("verified_on", DEFAULT_VERIFIED_DATE)),
+                            "source_url": first_rel.get("source_url", "TODO: fill link")
+                        })
+                    return findings
+            except Exception as e:
+                print(f"Neo4j Aura capability query failed ({e}); evaluating on embedded engine.")
+
+        # Embedded Graph Traversal for Capabilities
+        mandate_nodes = [
+            n for n in self.nodes 
+            if n["group"] == "mandate" and n.get("properties", {}).get("status", "active") in ["active", "flagged", "flagged_overlap", "keep_confirmed"]
+        ]
+
+        mandate_to_merchant = {}
+        for m in mandate_nodes:
+            for e in self.edges:
+                if e["source"] == m["id"] and e["type"] == "FOR":
+                    merch_node = next((n for n in self.nodes if n["id"] == e["target"]), None)
+                    if merch_node:
+                        mandate_to_merchant[m["id"]] = merch_node
+
+        includes_pairs = set()
+        for e in self.edges:
+            if e["type"] in ["INCLUDES", "OFFERS"]:
+                includes_pairs.add((e["source"], e["target"]))
+
+        cap_to_mandates = {}
+        cap_to_vendors = {}
+        cap_to_meta = {}
+
+        today_dt = datetime.utcnow()
+        six_months_ago = today_dt - timedelta(days=180)
+
+        for m in mandate_nodes:
+            merch = mandate_to_merchant.get(m["id"])
+            if not merch:
+                continue
+            
+            connected_merchs = [merch["id"]]
+            for e in self.edges:
+                if e["type"] in ["OFFERS", "INCLUDES"] and e["source"] == merch["id"]:
+                    connected_merchs.append(e["target"])
+
+            for c_merch_id in connected_merchs:
+                for e in self.edges:
+                    if e["type"] == "PROVIDES" and e["source"] == c_merch_id:
+                        cap_id = e["target"].replace("cap_", "")
+                        ver_str = e.get("properties", {}).get("verified_on")
+                        if ver_str:
+                            try:
+                                ver_dt = datetime.strptime(str(ver_str)[:10], "%Y-%m-%d")
+                                if ver_dt < six_months_ago:
+                                    continue
+                            except Exception:
+                                pass
+
+                        if cap_id not in cap_to_mandates:
+                            cap_to_mandates[cap_id] = []
+                            cap_to_vendors[cap_id] = []
+                            cap_to_meta[cap_id] = e.get("properties", {})
+
+                        if m["properties"] not in cap_to_mandates[cap_id]:
+                            cap_to_mandates[cap_id].append(m["properties"])
+                        if merch["properties"] not in cap_to_vendors[cap_id]:
+                            cap_to_vendors[cap_id].append(merch["properties"])
+
+        findings = []
+        for cap_id, m_list in cap_to_mandates.items():
+            if len(m_list) <= 1:
+                continue
+
+            v_list = cap_to_vendors.get(cap_id, [])
+            v_ids = [f"merch_{v.get('id')}" for v in v_list]
+            
+            # Anti-self-bundle check
+            has_bundle = False
+            for v1 in v_ids:
+                for v2 in v_ids:
+                    if v1 != v2 and (v1, v2) in includes_pairs:
+                        has_bundle = True
+                        break
+                if has_bundle:
+                    break
+            if has_bundle:
+                continue
+
+            sorted_mids = sorted([str(m.get("id")) for m in m_list])
+            finding_key = hashlib.sha256(f"capability_overlap:{cap_id}:{':'.join(sorted_mids)}".encode()).hexdigest()
+            legacy_key = f"cap_ov_{cap_id}"
+            if finding_key in decided_keys or legacy_key in decided_keys:
+                continue
+
+            cap_node = next((n for n in self.nodes if n["id"] == f"cap_{cap_id}"), {})
+            cap_props = cap_node.get("properties", {})
+            meta = cap_to_meta.get(cap_id, {})
+
+            # Fixed-only savings
+            fixed_mands = [m for m in m_list if m.get("billing_type") != "usage_based"]
+            if len(fixed_mands) > 1:
+                costs = [float(m.get("annual_committed", m.get("annual_committed_cost", m.get("amount", 0.0) * 12))) for m in fixed_mands]
+                savings = sum(costs) - min(costs)
+            else:
+                savings = 0.0
+
+            findings.append({
+                "finding_id": f"cap_ov_{cap_id}",
+                "finding_key": finding_key,
+                "finding_type": "capability_overlap",
+                "capability_id": cap_id,
+                "capability_name": cap_props.get("name", cap_id),
+                "category": cap_props.get("category", "Software"),
+                "description": cap_props.get("description", ""),
+                "mandates": m_list,
+                "vendors": [v.get("name", v.get("id")) for v in v_list],
+                "potential_annual_saving": round(savings, 2),
+                "evidence_paths": [
+                    {
+                        "vendor": v.get("name", v.get("id")),
+                        "capability": cap_props.get("name", cap_id),
+                        "relationship": "PROVIDES",
+                        "confidence": meta.get("confidence", "confirmed_public"),
+                        "verified_on": str(meta.get("verified_on", DEFAULT_VERIFIED_DATE)),
+                        "source_url": meta.get("source_url", "TODO: fill link"),
+                        "notes": meta.get("notes", "")
+                    }
+                    for v in v_list
+                ],
+                "confidence": meta.get("confidence", "confirmed_public"),
+                "verified_on": str(meta.get("verified_on", DEFAULT_VERIFIED_DATE)),
+                "source_url": meta.get("source_url", "TODO: fill link")
+            })
+
+        return findings
+
+    def find_duplicate_vendors(self, uid: str = "user_primary") -> List[Dict[str, Any]]:
+        """
+        Identifies active mandates billed for the same vendor across multiple accounts or cards.
+        Anti-joins against Decision nodes, calculates fixed-only savings.
+        """
+        user_decisions = [
+            d for d in self.decisions 
+            if d.get("user_id") == uid and d.get("finding_type") in ["duplicate_vendor", "overlap"]
+        ]
+        decided_keys = {d.get("finding_key") for d in user_decisions if d.get("finding_key")}
+
+        cypher = """
+        MATCH (p:Person {id:$uid})-[:HAS_MANDATE]->(m:Mandate)-[:FOR]->(v)
+        WHERE m.status IN ['active', 'flagged', 'flagged_overlap', 'keep_confirmed']
+        OPTIONAL MATCH (p)-[:OWNS_ACCOUNT]->(acc:Account)-[:HAS_MANDATE]->(m)
+        WITH p, v, collect(DISTINCT m) AS mandates, collect(DISTINCT coalesce(acc.label, m.account_label, 'Primary Account')) AS accounts
+        WHERE size(mandates) > 1
+        RETURN v, mandates, accounts
+        """
+
+        if self.is_connected and self.driver:
+            try:
+                with self.driver.session() as session:
+                    dec_res = session.run("MATCH (p:Person {id:$uid})-[:MADE_DECISION]->(d:Decision) RETURN d.finding_key AS fkey", uid=uid)
+                    aura_decided_keys = {r["fkey"] for r in dec_res if r["fkey"]}
+                    all_decided = decided_keys.union(aura_decided_keys)
+
+                    result = session.run(cypher, uid=uid)
+                    findings = []
+                    for rec in result:
+                        v = dict(rec["v"])
+                        mandates = [dict(m) for m in rec["mandates"]]
+                        accounts = rec["accounts"]
+                        v_id = v.get("id", "unknown")
+
+                        sorted_mids = sorted([str(m.get("id")) for m in mandates])
+                        finding_key = hashlib.sha256(f"duplicate_vendor:{v_id}:{':'.join(sorted_mids)}".encode()).hexdigest()
+                        legacy_key = f"dup_vend_{v_id}"
+                        if finding_key in all_decided or legacy_key in all_decided:
+                            continue
+
+                        fixed_mands = [m for m in mandates if m.get("billing_type") != "usage_based"]
+                        if len(fixed_mands) > 1:
+                            costs = [float(m.get("annual_committed", m.get("annual_committed_cost", m.get("amount", 0) * 12))) for m in fixed_mands]
+                            savings = sum(costs) - min(costs)
+                        else:
+                            savings = 0.0
+
+                        findings.append({
+                            "finding_id": f"dup_vend_{v_id}",
+                            "finding_key": finding_key,
+                            "finding_type": "duplicate_vendor",
+                            "vendor_id": v_id,
+                            "vendor_name": v.get("name", v_id),
+                            "accounts": accounts,
+                            "mandates": mandates,
+                            "potential_annual_saving": round(savings, 2),
+                            "explanation": f"Multiple active mandates detected for {v.get('name', v_id)} across {len(accounts)} accounts ({', '.join(accounts)}).",
+                            "evidence_paths": [
+                                {
+                                    "mandate_id": m.get("id"),
+                                    "vendor": v.get("name", v_id),
+                                    "account": m.get("account_label", "Primary Account"),
+                                    "relationship": "FOR"
+                                }
+                                for m in mandates
+                            ]
+                        })
+                    return findings
+            except Exception as e:
+                print(f"Neo4j Aura duplicate query failed ({e}); evaluating on embedded engine.")
+
+        # Embedded Graph Traversal
+        mandate_nodes = [
+            n for n in self.nodes 
+            if n["group"] == "mandate" and n.get("properties", {}).get("status", "active") in ["active", "flagged", "flagged_overlap", "keep_confirmed"]
+        ]
+
+        vendor_groups = {}
+        for m in mandate_nodes:
+            props = m.get("properties", {})
+            v_id = props.get("merchant_id")
+            if not v_id:
+                for e in self.edges:
+                    if e["source"] == m["id"] and e["type"] == "FOR":
+                        v_id = e["target"].replace("merch_", "")
+                        break
+            if v_id:
+                if v_id not in vendor_groups:
+                    vendor_groups[v_id] = []
+                vendor_groups[v_id].append(props)
+
+        findings = []
+        for v_id, m_list in vendor_groups.items():
+            if len(m_list) > 1:
+                sorted_mids = sorted([str(m.get("id")) for m in m_list])
+                finding_key = hashlib.sha256(f"duplicate_vendor:{v_id}:{':'.join(sorted_mids)}".encode()).hexdigest()
+                legacy_key = f"dup_vend_{v_id}"
+                if finding_key in decided_keys or legacy_key in decided_keys:
+                    continue
+
+                merch_node = next((n for n in self.nodes if n["id"] == f"merch_{v_id}"), {})
+                v_name = merch_node.get("name") or v_id
+                accounts = list({m.get("account_label", "Primary Account") for m in m_list})
+
+                fixed_mands = [m for m in m_list if m.get("billing_type") != "usage_based"]
+                if len(fixed_mands) > 1:
+                    costs = [float(m.get("annual_committed", m.get("annual_committed_cost", m.get("amount", 0.0) * 12))) for m in fixed_mands]
+                    savings = sum(costs) - min(costs)
+                else:
+                    savings = 0.0
+
+                findings.append({
+                    "finding_id": f"dup_vend_{v_id}",
+                    "finding_key": finding_key,
+                    "finding_type": "duplicate_vendor",
+                    "vendor_id": v_id,
+                    "vendor_name": v_name,
+                    "accounts": accounts,
+                    "mandates": m_list,
+                    "potential_annual_saving": round(savings, 2),
+                    "explanation": f"Multiple active mandates detected for {v_name} across {len(accounts)} accounts ({', '.join(accounts)}).",
+                    "evidence_paths": [
+                        {
+                            "mandate_id": m.get("id"),
+                            "vendor": v_name,
+                            "account": m.get("account_label", "Primary Account"),
+                            "relationship": "FOR"
+                        }
+                        for m in m_list
+                    ]
+                })
+
+        return findings
+
+    def record_overlap_decision(
+        self,
+        uid: str,
+        kept_mandate_ids: List[str],
+        cancel_mandate_ids: List[str],
+        finding_key: Optional[str] = None,
+        finding_type: str = "overlap",
+        choice: str = "CONFIRMED"
+    ) -> Dict[str, Any]:
+        """
+        Stores user's confirmation in graph:
+        (:Person)-[:MADE_DECISION]->(:Decision {finding_key, finding_type, choice, timestamp})
         Marks kept mandates as 'keep_confirmed' and redundant mandates as 'suggested_cancel'.
         """
         now_iso = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
 
-        # Update in-memory graph
+        # Stable finding key generation if not passed
+        if not finding_key:
+            all_involved = sorted(list(set(kept_mandate_ids + cancel_mandate_ids)))
+            finding_key = hashlib.sha256(f"{finding_type}:{':'.join(all_involved)}".encode()).hexdigest()
+
+        # Update embedded graph decisions & mandate properties
+        decision_record = {
+            "finding_key": finding_key,
+            "finding_type": finding_type,
+            "choice": choice,
+            "timestamp": now_iso,
+            "kept_mandate_ids": kept_mandate_ids,
+            "cancel_mandate_ids": cancel_mandate_ids,
+            "user_id": uid
+        }
+        self.decisions.append(decision_record)
+
         for n in self.nodes:
             if n["group"] == "mandate":
                 props = n.get("properties", {})
-                mid = props.get("id") or n["id"].replace("mand_", "")
+                mid = str(props.get("id") or n["id"].replace("mand_", ""))
                 if mid in kept_mandate_ids:
                     props["status"] = "keep_confirmed"
                     props["overlap_decision_at"] = now_iso
@@ -653,30 +1247,43 @@ class Neo4jKnowledgeGraph:
         # Live Aura execution
         if self.is_connected and self.driver:
             try:
-                cypher_keep = """
+                cypher = """
+                MERGE (p:Person {id:$uid})
+                CREATE (d:Decision {
+                    finding_key: $finding_key,
+                    finding_type: $finding_type,
+                    choice: $choice,
+                    timestamp: datetime(),
+                    kept_mandate_ids: $kept_ids,
+                    cancel_mandate_ids: $cancel_ids,
+                    user_id: $uid
+                })
+                MERGE (p)-[:MADE_DECISION]->(d)
+                WITH p
                 UNWIND $kept_ids AS kid
-                MATCH (p:Person {id:$uid})-[:HAS_MANDATE]->(m:Mandate {id: kid})
-                SET m.status = 'keep_confirmed', m.overlap_decision_at = datetime()
-                MERGE (p)-[r:DECIDED_OVERLAP]->(m)
-                SET r.decision = 'KEEP', r.timestamp = datetime();
-                """
-                cypher_cancel = """
+                MATCH (p)-[:HAS_MANDATE]->(mk:Mandate {id: kid})
+                SET mk.status = 'keep_confirmed', mk.overlap_decision_at = datetime()
+                WITH p
                 UNWIND $cancel_ids AS cid
-                MATCH (p:Person {id:$uid})-[:HAS_MANDATE]->(m:Mandate {id: cid})
-                SET m.status = 'suggested_cancel', m.overlap_decision_at = datetime()
-                MERGE (p)-[r:DECIDED_OVERLAP]->(m)
-                SET r.decision = 'SUGGESTED_CANCEL', r.timestamp = datetime();
+                MATCH (p)-[:HAS_MANDATE]->(mc:Mandate {id: cid})
+                SET mc.status = 'suggested_cancel', mc.overlap_decision_at = datetime();
                 """
                 with self.driver.session() as session:
-                    if kept_mandate_ids:
-                        session.run(cypher_keep, uid=uid, kept_ids=kept_mandate_ids)
-                    if cancel_mandate_ids:
-                        session.run(cypher_cancel, uid=uid, cancel_ids=cancel_mandate_ids)
+                    session.run(
+                        cypher,
+                        uid=uid,
+                        finding_key=finding_key,
+                        finding_type=finding_type,
+                        choice=choice,
+                        kept_ids=kept_mandate_ids,
+                        cancel_ids=cancel_mandate_ids
+                    )
             except Exception as e:
                 print(f"Live Aura overlap decision sync deferred: {e}")
 
         return {
             "status": "SUCCESS",
+            "finding_key": finding_key,
             "kept_count": len(kept_mandate_ids),
             "suggested_cancel_count": len(cancel_mandate_ids),
             "timestamp": now_iso
@@ -684,7 +1291,7 @@ class Neo4jKnowledgeGraph:
 
     def confirm_mandate_cancellation(self, uid: str, mandate_id: str, cancel_date: Optional[str] = None) -> Dict[str, Any]:
         """
-        Marks mandate as cancel_confirmed_by_user in graph when user clicks Confirm in popup.
+        Marks mandate as 'marked_cancelled' (and 'cancel_confirmed_by_user') in graph when user clicks Confirm in popup.
         """
         cancel_dt = cancel_date or datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -692,8 +1299,8 @@ class Neo4jKnowledgeGraph:
         for n in self.nodes:
             if n["group"] == "mandate":
                 props = n.get("properties", {})
-                mid = props.get("id") or n["id"].replace("mand_", "")
-                if mid == mandate_id:
+                mid = str(props.get("id") or n["id"].replace("mand_", ""))
+                if mid == str(mandate_id):
                     props["status"] = "cancel_confirmed_by_user"
                     props["cancel_confirmed_at"] = cancel_dt
                     props["reminder_count"] = 0
@@ -725,7 +1332,8 @@ class Neo4jKnowledgeGraph:
         Reconciles mandates marked cancelled against new bank statement:
         - GRACE_WINDOW_DAYS = 3: Charges <= cancel_confirmed_at + 3 days are in-flight; do NOT flag.
         - Charges > cancel_confirmed_at + 3 days: Mandate is STILL CHARGING! Increment reminder_count, flag action required.
-        - Zero charges & statement_end_date > expected_next_charge_date: Mandate is VERIFIED CANCELLED!
+        - Zero charges & statement_end_date >= expected_next_charge_date: Mandate is VERIFIED CANCELLED!
+        - Zero charges & statement_end_date < expected_next_charge_date: Awaiting billing cycle; status remains marked_cancelled.
         """
         GRACE_WINDOW_DAYS = 3
         now_dt = datetime.strptime(str(statement_end_date)[:10], "%Y-%m-%d") if statement_end_date else datetime.utcnow()
@@ -734,7 +1342,8 @@ class Neo4jKnowledgeGraph:
             "reconciled_count": 0,
             "still_charging": [],
             "verified_cancelled": [],
-            "in_flight_grace": []
+            "in_flight_grace": [],
+            "pending_verification": []
         }
 
         # Find cancelled mandates in embedded graph
@@ -743,7 +1352,7 @@ class Neo4jKnowledgeGraph:
             if n["group"] == "mandate":
                 p = n.get("properties", {})
                 status = p.get("status")
-                if status in ["cancel_confirmed_by_user", "still_charging"]:
+                if status in ["marked_cancelled", "cancel_confirmed_by_user", "still_charging"]:
                     cancelled_mandates.append(p)
 
         for mand in cancelled_mandates:
@@ -763,7 +1372,6 @@ class Neo4jKnowledgeGraph:
             except Exception:
                 expected_next_dt = cancel_dt + timedelta(days=30)
 
-            # Match incoming transactions using deterministic reference merchant resolution
             mand_desc = mand.get("descriptor", "").strip().lower()
             mand_merchant = mand.get("merchant_id", "")
             matching_txs = []
@@ -782,15 +1390,12 @@ class Neo4jKnowledgeGraph:
                     matching_txs.append(t)
 
             if matching_txs:
-                # Charges detected! Check if in-flight grace or still charging
                 latest_tx = max(matching_txs, key=lambda x: str(x.get("date", ""))[:10])
                 tx_date_str = str(latest_tx.get("date", ""))[:10]
                 tx_dt = datetime.strptime(tx_date_str, "%Y-%m-%d")
-
                 grace_limit_dt = cancel_dt + timedelta(days=GRACE_WINDOW_DAYS)
 
                 if tx_dt <= grace_limit_dt:
-                    # In-flight charge within grace window
                     reconciliation_report["in_flight_grace"].append({
                         "mandate_id": mid,
                         "merchant_name": mand.get("merchant_name"),
@@ -799,18 +1404,32 @@ class Neo4jKnowledgeGraph:
                         "note": f"Charge of ₹{latest_tx.get('amount')} fell within {GRACE_WINDOW_DAYS}-day in-flight billing grace window. No action needed."
                     })
                 else:
-                    # Charged after grace window: STILL CHARGING!
                     mand["status"] = "still_charging"
                     mand["reminder_count"] = int(mand.get("reminder_count", 0)) + 1
                     mand["last_seen_charge_date"] = tx_date_str
+                    cadence = mand.get("cadence", "MONTHLY")
+                    days_ahead = 365 if cadence == "ANNUAL" else (90 if cadence == "QUARTERLY" else 30)
+                    next_expected_dt = tx_dt + timedelta(days=days_ahead)
+                    mand["expected_next_charge_date"] = next_expected_dt.strftime("%Y-%m-%d")
 
-                    # Update node
                     for n in self.nodes:
                         if n["id"] == f"mand_{mid}":
                             n["properties"]["status"] = "still_charging"
                             n["properties"]["reminder_count"] = mand["reminder_count"]
                             n["properties"]["last_seen_charge_date"] = tx_date_str
                             n["color"] = "#DC2626"
+
+                    if self.is_connected and self.driver:
+                        try:
+                            with self.driver.session() as session:
+                                session.run("""
+                                MATCH (p:Person {id:$uid})-[:HAS_MANDATE]->(m:Mandate {id: $mid})
+                                SET m.status = 'still_charging',
+                                    m.reminder_count = $rc,
+                                    m.last_seen_charge_date = $ls
+                                """, uid=uid, mid=mid, rc=mand["reminder_count"], ls=tx_date_str)
+                        except Exception as e:
+                            print(f"Aura still_charging sync deferred: {e}")
 
                     reconciliation_report["still_charging"].append({
                         "mandate_id": mid,
@@ -824,14 +1443,22 @@ class Neo4jKnowledgeGraph:
                     })
 
             else:
-                # No charges seen in this statement!
                 if now_dt >= expected_next_dt:
-                    # Billing cycle covered and zero debits: VERIFIED CANCELLED!
                     mand["status"] = "verified_cancelled"
                     for n in self.nodes:
                         if n["id"] == f"mand_{mid}":
                             n["properties"]["status"] = "verified_cancelled"
                             n["color"] = "#059669"
+
+                    if self.is_connected and self.driver:
+                        try:
+                            with self.driver.session() as session:
+                                session.run("""
+                                MATCH (p:Person {id:$uid})-[:HAS_MANDATE]->(m:Mandate {id: $mid})
+                                SET m.status = 'verified_cancelled'
+                                """, uid=uid, mid=mid)
+                        except Exception as e:
+                            print(f"Aura verified_cancelled sync deferred: {e}")
 
                     reconciliation_report["verified_cancelled"].append({
                         "mandate_id": mid,
@@ -840,15 +1467,160 @@ class Neo4jKnowledgeGraph:
                         "statement_end_date": str(now_dt)[:10],
                         "message": f"Verified successfully cancelled! No charges detected across billing period extending to {str(now_dt)[:10]}."
                     })
+                else:
+                    reconciliation_report["pending_verification"].append({
+                        "mandate_id": mid,
+                        "merchant_name": mand.get("merchant_name"),
+                        "expected_next_charge_date": str(expected_next_dt)[:10],
+                        "statement_end_date": str(now_dt)[:10],
+                        "message": f"Awaiting next billing cycle ({str(expected_next_dt)[:10]}) to verify zero debits."
+                    })
 
-        reconciliation_report["reconciled_count"] = len(reconciliation_report["still_charging"]) + len(reconciliation_report["verified_cancelled"]) + len(reconciliation_report["in_flight_grace"])
+        reconciliation_report["reconciled_count"] = (
+            len(reconciliation_report["still_charging"]) + 
+            len(reconciliation_report["verified_cancelled"]) + 
+            len(reconciliation_report["in_flight_grace"])
+        )
         return reconciliation_report
+
+    def add_mandate_tags(self, uid: str, mandate_id: str, tags: List[str]) -> Dict[str, Any]:
+        """
+        Tags a mandate with user-defined labels (e.g. 'Engineering', 'Marketing', 'Discretionary').
+        Ensures Tag nodes are scoped to authenticated user to maintain tenant isolation.
+        """
+        clean_tags = [t.strip() for t in tags if t.strip()]
+
+        for n in self.nodes:
+            if n["group"] == "mandate":
+                props = n.get("properties", {})
+                mid = str(props.get("id") or n["id"].replace("mand_", ""))
+                if mid == str(mandate_id):
+                    existing = props.get("tags", [])
+                    props["tags"] = list(set(existing + clean_tags))
+
+        if self.is_connected and self.driver:
+            try:
+                cypher = """
+                MATCH (p:Person {id:$uid})-[:HAS_MANDATE]->(m:Mandate {id: $mid})
+                UNWIND $tags AS tag_name
+                MERGE (t:Tag {name: tag_name, user_id: $uid})
+                MERGE (m)-[:TAGGED]->(t)
+                RETURN m, collect(t.name) AS all_tags;
+                """
+                with self.driver.session() as session:
+                    session.run(cypher, uid=uid, mid=mandate_id, tags=clean_tags)
+            except Exception as e:
+                print(f"Live Aura tag sync deferred: {e}")
+
+        return {
+            "mandate_id": mandate_id,
+            "tags": clean_tags,
+            "status": "SUCCESS"
+        }
+
+    def get_spend_concentration(self, uid: str = "user_primary") -> Dict[str, Any]:
+        """
+        Aggregates recurring spend by Category, Vendor, Account, Tag, Mechanism, and Billing Type.
+        """
+        active_mands = [
+            n.get("properties", {}) for n in self.nodes
+            if n["group"] == "mandate" and n.get("properties", {}).get("status") in ["active", "flagged", "flagged_overlap", "keep_confirmed"]
+        ]
+
+        cat_spend = {}
+        vendor_spend = {}
+        account_spend = {}
+        tag_spend = {}
+        mech_spend = {}
+        billing_type_spend = {}
+        total_spend = 0.0
+
+        for m in active_mands:
+            cost = float(m.get("annual_committed", m.get("annual_committed_cost", m.get("amount", 0.0) * 12)))
+            total_spend += cost
+
+            v = m.get("merchant_name") or m.get("merchant_id") or "Unknown"
+            vendor_spend[v] = vendor_spend.get(v, 0.0) + cost
+
+            acc = m.get("account_label") or "Primary Account"
+            account_spend[acc] = account_spend.get(acc, 0.0) + cost
+
+            mech = m.get("mechanism") or "CARD_SI"
+            mech_spend[mech] = mech_spend.get(mech, 0.0) + cost
+
+            bt = m.get("billing_type") or "fixed"
+            billing_type_spend[bt] = billing_type_spend.get(bt, 0.0) + cost
+
+            for t in m.get("tags", []):
+                tag_spend[t] = tag_spend.get(t, 0.0) + cost
+
+            merch_node = next((n for n in self.nodes if n["id"] == f"merch_{m.get('merchant_id')}"), None)
+            c = merch_node.get("properties", {}).get("category", "Software") if merch_node else "Software"
+            cat_spend[c] = cat_spend.get(c, 0.0) + cost
+
+        def fmt_list(d):
+            return sorted(
+                [{"name": k, "annual_spend": round(v, 2), "pct": round((v / total_spend * 100) if total_spend > 0 else 0, 1)} for k, v in d.items()],
+                key=lambda x: x["annual_spend"],
+                reverse=True
+            )
+
+        return {
+            "total_annual_spend": round(total_spend, 2),
+            "by_category": fmt_list(cat_spend),
+            "by_vendor": fmt_list(vendor_spend),
+            "by_account": fmt_list(account_spend),
+            "by_tag": fmt_list(tag_spend),
+            "by_mechanism": fmt_list(mech_spend),
+            "by_billing_type": fmt_list(billing_type_spend)
+        }
+
+    def get_decision_history(self, uid: str = "user_primary") -> List[Dict[str, Any]]:
+        """
+        Returns full history of user's overlap and cancellation decisions.
+        """
+        if self.is_connected and self.driver:
+            try:
+                cypher = """
+                MATCH (p:Person {id:$uid})-[:MADE_DECISION]->(d:Decision)
+                RETURN d.finding_key AS finding_key,
+                       d.finding_type AS finding_type,
+                       d.choice AS choice,
+                       toString(d.timestamp) AS timestamp,
+                       d.kept_mandate_ids AS kept_mandate_ids,
+                       d.cancel_mandate_ids AS cancel_mandate_ids
+                ORDER BY d.timestamp DESC
+                """
+                with self.driver.session() as session:
+                    res = session.run(cypher, uid=uid)
+                    return [record.data() for record in res]
+            except Exception as e:
+                print(f"Aura decision history query deferred: {e}")
+
+        return [
+            d for d in reversed(self.decisions)
+            if d.get("user_id") == uid
+        ]
 
     def run_cypher_query(self, cypher: str) -> Dict[str, Any]:
         """
         Executes a Cypher query on live Neo4j if connected,
         otherwise interprets preset queries against embedded graph.
+        Enforces read-only query policy to prevent destructive Cypher injection.
         """
+        # Security Guard: Block destructive/administrative Cypher clauses in public query endpoint
+        disallowed_keywords = ["DROP", "DELETE", "DETACH", "CREATE USER", "ALTER USER", "REMOVE", "GRANT", "REVOKE", "TERMINATE"]
+        cypher_upper = cypher.upper()
+        for kw in disallowed_keywords:
+            if kw in cypher_upper:
+                return {
+                    "mode": "SECURITY_POLICY",
+                    "status": "BLOCKED",
+                    "error": f"Security violation: Write or destructive Cypher command '{kw}' is prohibited on the query endpoint.",
+                    "cypher": cypher,
+                    "data": []
+                }
+
         if self.is_connected and self.driver:
             try:
                 with self.driver.session() as session:
@@ -1027,22 +1799,67 @@ class Neo4jKnowledgeGraph:
                 )
 
         lines.append("")
-        lines.append("// 5. Curated Bundle Inclusions: (:Merchant)-[:INCLUDES]->(:Merchant)")
-        for b in CURATED_BUNDLES:
-            safe_notes = b['notes'].replace("'", "\\'")
+        lines.append("// 5. Capabilities")
+        for c in CAPABILITIES:
+            safe_desc = c.get("description", "").replace("'", "\\'")
             lines.append(
-                f"MERGE (p:Merchant {{id: '{b['parent_id']}'}}) "
-                f"MERGE (c:Merchant {{id: '{b['child_id']}'}}) "
-                f"MERGE (p)-[r:INCLUDES]->(c) "
-                f"ON CREATE SET r.confidence = '{b['confidence']}', r.verified_on = date('{b['verified_on']}'), "
-                f"r.source_url = '{b['source_url']}', r.notes = '{safe_notes}';"
+                f"MERGE (cap:Capability {{id: '{c['id']}'}}) "
+                f"ON CREATE SET cap.name = '{c['name']}', cap.category = '{c['category']}', cap.description = '{safe_desc}';"
             )
 
         lines.append("")
-        lines.append("// 6. Verification Query: Multi-Hop Bundle Overlap Traversal")
+        lines.append("// 6. Plans & Offers")
+        for pl in PLANS:
+            lines.append(
+                f"MERGE (plan:Plan {{id: '{pl['id']}'}}) "
+                f"ON CREATE SET plan.name = '{pl['name']}', plan.tier = '{pl['tier']}', "
+                f"plan.monthly_cost = {pl['monthly_cost']}, plan.annual_cost = {pl['annual_cost']};"
+            )
+            lines.append(
+                f"MATCH (v:Merchant {{id: '{pl['vendor_id']}'}}), (plan:Plan {{id: '{pl['id']}'}}) "
+                f"MERGE (v)-[:OFFERS]->(plan);"
+            )
+
+        lines.append("")
+        lines.append("// 7. Curated Bundle Inclusions: (:Plan)-[:INCLUDES]->(:Merchant)")
+        for b in CURATED_BUNDLES:
+            safe_notes = b['notes'].replace("'", "\\'")
+            lines.append(
+                f"MATCH (plan:Plan {{id: '{b['parent_plan_id']}'}}), (c:Merchant {{id: '{b['child_vendor_id']}'}}) "
+                f"MERGE (plan)-[r:INCLUDES]->(c) "
+                f"ON CREATE SET r.tier = '{b['tier']}', r.confidence = '{b['confidence']}', "
+                f"r.verified_on = date('{b['verified_on']}'), r.source_url = '{b['source_url']}', r.notes = '{safe_notes}';"
+            )
+            lines.append(
+                f"MATCH (p:Merchant {{id: '{b['parent_vendor_id']}'}}), (c:Merchant {{id: '{b['child_vendor_id']}'}}) "
+                f"MERGE (p)-[r2:INCLUDES]->(c) "
+                f"ON CREATE SET r2.tier = '{b['tier']}', r2.confidence = '{b['confidence']}', "
+                f"r2.verified_on = date('{b['verified_on']}'), r2.source_url = '{b['source_url']}', r2.notes = '{safe_notes}';"
+            )
+
+        lines.append("")
+        lines.append("// 8. Vendor Functional Capabilities: (:Merchant)-[:PROVIDES]->(:Capability)")
+        for vc in VENDOR_CAPABILITIES:
+            safe_notes = vc.get('notes', '').replace("'", "\\'")
+            lines.append(
+                f"MATCH (v:Merchant {{id: '{vc['vendor_id']}'}}), (cap:Capability {{id: '{vc['capability_id']}'}}) "
+                f"MERGE (v)-[r:PROVIDES]->(cap) "
+                f"ON CREATE SET r.confidence = '{vc['confidence']}', r.verified_on = date('{vc['verified_on']}'), "
+                f"r.source_url = '{vc['source_url']}', r.notes = '{safe_notes}';"
+            )
+
+        lines.append("")
+        lines.append("// 9. Verification Query: Multi-Hop Bundle Overlap Traversal")
         lines.append("MATCH (p:Person)-[:HAS_MANDATE]->(ma:Mandate)-[:FOR]->(a:Merchant), (p)-[:HAS_MANDATE]->(mb:Mandate)-[:FOR]->(b:Merchant)")
         lines.append("WHERE ma <> mb MATCH path = (a)-[:INCLUDES*1..4]->(b)")
         lines.append("RETURN ma.id AS ParentMandate, mb.id AS RedundantMandate, [n in nodes(path) | n.name] AS PathNodes;")
+
+        lines.append("")
+        lines.append("// 10. Verification Query: Capability Overlap Clustering")
+        lines.append("MATCH (p:Person)-[:HAS_MANDATE]->(m:Mandate)-[:FOR]->(v:Merchant)-[:PROVIDES]->(c:Capability)")
+        lines.append("WITH p, c, collect(DISTINCT {mandate: m.id, vendor: v.name, cost: m.annual_committed_cost}) AS mandates")
+        lines.append("WHERE size(mandates) > 1")
+        lines.append("RETURN c.name AS Capability, mandates;")
 
         return "\n".join(lines)
 

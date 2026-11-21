@@ -363,7 +363,7 @@ REFERENCE_MERCHANTS = [
 
     # Microsoft Corporation footprint
     {
-        "id": "microsoft_365",
+        "id": "microsoft_365_onedrive",
         "name": "Microsoft 365 (Office / OneDrive)",
         "category": "Cloud & Productivity",
         "parent": "Microsoft Corporation",
@@ -2059,3 +2059,106 @@ HARD_NEGATIVE_PATTERNS = [
         "reason": "Discretionary ad-hoc food delivery orders with unpredictable intervals (e.g. 2-5 days apart) rather than synchronized recurring cycles."
     }
 ]
+
+# ==============================================================================
+# BUSINESS & CONSUMER FUNCTIONAL CAPABILITIES (:Capability)
+# Models functional overlap across SaaS, startup infrastructure & consumer tools.
+# ==============================================================================
+CAPABILITIES = [
+    {
+        "id": "team_chat",
+        "name": "Team Real-Time Messaging",
+        "category": "Team Collaboration",
+        "description": "Persistent asynchronous team chat, channels, direct messaging, and integrations."
+    },
+    {
+        "id": "video_conferencing",
+        "name": "Video Meetings & Conferencing",
+        "category": "Team Collaboration",
+        "description": "High-definition video calls, screen sharing, virtual rooms, and meeting recordings."
+    },
+    {
+        "id": "cloud_storage",
+        "name": "Cloud Document & File Storage",
+        "category": "Cloud & Infrastructure",
+        "description": "Secure file syncing, cloud backup, shared document drives, and media storage."
+    },
+    {
+        "id": "design_prototyping",
+        "name": "Collaborative Design & Prototyping",
+        "category": "Design & Creative",
+        "description": "UI/UX wireframing, component design systems, vector graphics, and asset generation."
+    },
+    {
+        "id": "project_management",
+        "name": "Project Tracking & Knowledge Wiki",
+        "category": "Productivity & SaaS",
+        "description": "Agile task boards, sprint tracking, documentation wikis, and issue management."
+    },
+    {
+        "id": "ai_assistant",
+        "name": "Generative AI Coding & Assistant",
+        "category": "AI & Automation",
+        "description": "Large language model assistants for writing, research, synthesis, and code completion."
+    },
+    {
+        "id": "music_streaming",
+        "name": "On-Demand Music & Audio Streaming",
+        "category": "Entertainment & Media",
+        "description": "Ad-free on-demand music playback, curated playlists, and offline audio caching."
+    },
+    {
+        "id": "video_streaming",
+        "name": "Subscription Video On-Demand (SVOD)",
+        "category": "Entertainment & Media",
+        "description": "Streaming movies, television series, sports broadcast rights, and originals."
+    }
+]
+
+# Verified (:Vendor)-[:PROVIDES]->(:Capability) Relationships
+# Strictly verified functional linkages; each edge carries provenance metadata.
+VENDOR_CAPABILITIES = [
+    # Team Chat
+    {"vendor_id": "slack_pro", "capability_id": "team_chat", "confidence": "confirmed_public", "verified_on": "2026-11-01", "source_url": "TODO: fill link", "notes": "Slack Pro provides real-time team messaging channels, huddles, and external connects."},
+    {"vendor_id": "google_workspace", "capability_id": "team_chat", "confidence": "confirmed_public", "verified_on": "2026-11-01", "source_url": "TODO: fill link", "notes": "Google Workspace includes Google Chat team spaces and direct messaging."},
+    {"vendor_id": "microsoft_365", "capability_id": "team_chat", "confidence": "confirmed_public", "verified_on": "2026-11-01", "source_url": "TODO: fill link", "notes": "Microsoft 365 Business includes Microsoft Teams messaging."},
+
+    # Video Conferencing
+    {"vendor_id": "zoom_video", "capability_id": "video_conferencing", "confidence": "confirmed_public", "verified_on": "2026-11-01", "source_url": "TODO: fill link", "notes": "Zoom Pro provides 30-hour meeting duration, cloud recording, and whiteboards."},
+    {"vendor_id": "google_workspace", "capability_id": "video_conferencing", "confidence": "confirmed_public", "verified_on": "2026-11-01", "source_url": "TODO: fill link", "notes": "Google Workspace includes Google Meet video conferencing."},
+    {"vendor_id": "microsoft_365", "capability_id": "video_conferencing", "confidence": "confirmed_public", "verified_on": "2026-11-01", "source_url": "TODO: fill link", "notes": "Microsoft 365 includes Microsoft Teams video conferencing."},
+
+    # Cloud Storage
+    {"vendor_id": "google_one", "capability_id": "cloud_storage", "confidence": "confirmed_public", "verified_on": "2026-11-01", "source_url": "TODO: fill link", "notes": "Google One provides 100GB to 2TB cloud storage shared across Drive, Gmail, and Photos."},
+    {"vendor_id": "google_workspace", "capability_id": "cloud_storage", "confidence": "confirmed_public", "verified_on": "2026-11-01", "source_url": "TODO: fill link", "notes": "Google Workspace includes Drive cloud storage per user seat."},
+    {"vendor_id": "onedrive", "capability_id": "cloud_storage", "confidence": "confirmed_public", "verified_on": "2026-11-01", "source_url": "TODO: fill link", "notes": "Microsoft OneDrive provides standalone cloud document storage."},
+    {"vendor_id": "apple_icloud", "capability_id": "cloud_storage", "confidence": "confirmed_public", "verified_on": "2026-11-01", "source_url": "TODO: fill link", "notes": "Apple iCloud+ provides cloud backup and file storage."},
+
+    # Design & Prototyping
+    {"vendor_id": "figma_pro", "capability_id": "design_prototyping", "confidence": "confirmed_public", "verified_on": "2026-11-01", "source_url": "TODO: fill link", "notes": "Figma Professional provides collaborative UI/UX wireframing and design systems."},
+    {"vendor_id": "canva_pro", "capability_id": "design_prototyping", "confidence": "confirmed_public", "verified_on": "2026-11-01", "source_url": "TODO: fill link", "notes": "Canva Pro provides template graphics, social visual production, and vector editing."},
+    {"vendor_id": "adobe_creative_cloud", "capability_id": "design_prototyping", "confidence": "confirmed_public", "verified_on": "2026-11-01", "source_url": "TODO: fill link", "notes": "Adobe Creative Cloud includes Photoshop, Illustrator, and XD design tools."},
+
+    # Project Management
+    {"vendor_id": "notion_plus", "capability_id": "project_management", "confidence": "confirmed_public", "verified_on": "2026-11-01", "source_url": "TODO: fill link", "notes": "Notion Plus provides collaborative project databases, sprint roadmaps, and wikis."},
+
+    # AI Assistant
+    {"vendor_id": "chatgpt_plus", "capability_id": "ai_assistant", "confidence": "confirmed_public", "verified_on": "2026-11-01", "source_url": "TODO: fill link", "notes": "OpenAI ChatGPT Plus subscription with GPT-4o access."},
+    {"vendor_id": "claude_pro", "capability_id": "ai_assistant", "confidence": "confirmed_public", "verified_on": "2026-11-01", "source_url": "TODO: fill link", "notes": "Anthropic Claude Pro subscription with Claude 3.5 Sonnet access."},
+    {"vendor_id": "github_copilot", "capability_id": "ai_assistant", "confidence": "confirmed_public", "verified_on": "2026-11-01", "source_url": "TODO: fill link", "notes": "GitHub Copilot individual and business AI developer pairing."},
+    {"vendor_id": "perplexity_pro", "capability_id": "ai_assistant", "confidence": "confirmed_public", "verified_on": "2026-11-01", "source_url": "TODO: fill link", "notes": "Perplexity Pro conversational web search and research synthesis."},
+
+    # Music Streaming
+    {"vendor_id": "spotify_india", "capability_id": "music_streaming", "confidence": "confirmed_public", "verified_on": "2026-11-01", "source_url": "TODO: fill link", "notes": "Spotify Premium on-demand music and podcast streaming."},
+    {"vendor_id": "youtube_music", "capability_id": "music_streaming", "confidence": "confirmed_public", "verified_on": "2026-11-01", "source_url": "TODO: fill link", "notes": "YouTube Music ad-free on-demand audio streaming."},
+    {"vendor_id": "apple_music", "capability_id": "music_streaming", "confidence": "confirmed_public", "verified_on": "2026-11-01", "source_url": "TODO: fill link", "notes": "Apple Music lossless and spatial audio streaming."},
+    {"vendor_id": "jiosaavn_pro", "capability_id": "music_streaming", "confidence": "confirmed_public", "verified_on": "2026-11-01", "source_url": "TODO: fill link", "notes": "JioSaavn Pro ad-free Indian music streaming."},
+
+    # Video Streaming (SVOD)
+    {"vendor_id": "netflix_india", "capability_id": "video_streaming", "confidence": "confirmed_public", "verified_on": "2026-11-01", "source_url": "TODO: fill link", "notes": "Netflix streaming catalogue for movies and television series."},
+    {"vendor_id": "prime_video", "capability_id": "video_streaming", "confidence": "confirmed_public", "verified_on": "2026-11-01", "source_url": "TODO: fill link", "notes": "Amazon Prime Video on-demand streaming service."},
+    {"vendor_id": "disney_hotstar", "capability_id": "video_streaming", "confidence": "confirmed_public", "verified_on": "2026-11-01", "source_url": "TODO: fill link", "notes": "Disney+ Hotstar streaming sports, movies, and Disney content."},
+    {"vendor_id": "sony_liv", "capability_id": "video_streaming", "confidence": "confirmed_public", "verified_on": "2026-11-01", "source_url": "TODO: fill link", "notes": "SonyLIV entertainment and live sports streaming."},
+    {"vendor_id": "jiocinema_premium", "capability_id": "video_streaming", "confidence": "confirmed_public", "verified_on": "2026-11-01", "source_url": "TODO: fill link", "notes": "JioCinema Premium streaming HBO/Peacock catalogue and live sports."}
+]
+

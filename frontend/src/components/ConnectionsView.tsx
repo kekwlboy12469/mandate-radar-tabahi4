@@ -63,6 +63,11 @@ export function ConnectionsView({ onDataIngested }: ConnectionsViewProps) {
     'Dear Customer, Your A/c **4821 is debited for Rs 649.00 on 21-Nov-26 at NETFLIX ENTERTAINMENT. Ref 429104829102. Avl Bal Rs 52,140.00'
   )
 
+  // Custom email state for Gmail connection
+  const [customEmail, setCustomEmail] = useState('')
+  const [isEditingEmail, setIsEditingEmail] = useState(false)
+  const [newEmailInput, setNewEmailInput] = useState('')
+
   const fetchStatus = async () => {
     try {
       const res = await fetch('/api/v1/integrations/status')
@@ -83,11 +88,11 @@ export function ConnectionsView({ onDataIngested }: ConnectionsViewProps) {
   const handleConnectGmail = async () => {
     setLoading(true)
     try {
-      // For immediate local demonstration / test flow, callback with mock OAuth code
-      const res = await fetch('/api/v1/integrations/gmail/callback?code=mock_code_user_connect')
+      const emailParam = customEmail.trim() ? `&email=${encodeURIComponent(customEmail.trim())}` : ''
+      const res = await fetch(`/api/v1/integrations/gmail/callback?code=mock_code_user_connect${emailParam}`)
       if (res.ok) {
         const data = await res.json()
-        setMsg({ text: data.message || 'Gmail successfully connected (user@gmail.com)!', type: 'success' })
+        setMsg({ text: data.message || `Gmail successfully connected (${customEmail || 'user@gmail.com'})!`, type: 'success' })
         await fetchStatus()
         if (onDataIngested) onDataIngested()
       } else {
@@ -95,6 +100,31 @@ export function ConnectionsView({ onDataIngested }: ConnectionsViewProps) {
       }
     } catch (e: any) {
       setMsg({ text: `Connection error: ${e.message}`, type: 'error' })
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleUpdateEmail = async () => {
+    if (!newEmailInput.trim()) return
+    setLoading(true)
+    try {
+      const res = await fetch('/api/v1/integrations/gmail/set-email', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: newEmailInput.trim() })
+      })
+      if (res.ok) {
+        const data = await res.json()
+        setMsg({ text: data.message || `Updated Gmail to ${newEmailInput}`, type: 'success' })
+        setIsEditingEmail(false)
+        await fetchStatus()
+      } else {
+        const err = await res.json()
+        setMsg({ text: err.detail || 'Failed to update email', type: 'error' })
+      }
+    } catch (e: any) {
+      setMsg({ text: e.message, type: 'error' })
     } finally {
       setLoading(false)
     }
@@ -345,12 +375,66 @@ export function ConnectionsView({ onDataIngested }: ConnectionsViewProps) {
           </div>
 
           {gmailConnected && (
-            <div className="p-3 rounded-xl bg-[#111726] border border-white/[0.08] text-xs font-mono space-y-1">
-              <div className="text-neutral-400 text-[10px] uppercase">Connected Account</div>
-              <div className="text-white font-semibold">{status?.channels?.gmail?.email || 'user@gmail.com'}</div>
+            <div className="p-3 rounded-xl bg-[#111726] border border-white/[0.08] text-xs font-mono space-y-2">
+              <div className="flex items-center justify-between">
+                <div className="text-neutral-400 text-[10px] uppercase">Connected Account</div>
+                {!isEditingEmail && (
+                  <button
+                    onClick={() => {
+                      setNewEmailInput(status?.channels?.gmail?.email || '')
+                      setIsEditingEmail(true)
+                    }}
+                    className="text-[10px] text-cyan-400 hover:text-cyan-300 font-sans cursor-pointer underline"
+                  >
+                    Change Email
+                  </button>
+                )}
+              </div>
+
+              {isEditingEmail ? (
+                <div className="flex items-center gap-1.5 pt-1">
+                  <input
+                    type="email"
+                    value={newEmailInput}
+                    onChange={e => setNewEmailInput(e.target.value)}
+                    placeholder="yourname@gmail.com"
+                    className="flex-1 bg-[#080b12] border border-cyan-500/40 rounded-lg px-2.5 py-1.5 text-xs font-mono text-white placeholder-neutral-500 focus:outline-none"
+                    autoFocus
+                  />
+                  <button
+                    onClick={handleUpdateEmail}
+                    disabled={loading || !newEmailInput.trim()}
+                    className="px-2.5 py-1.5 bg-cyan-600 hover:bg-cyan-500 text-white rounded-lg text-[11px] font-bold transition disabled:opacity-50 cursor-pointer"
+                  >
+                    Save
+                  </button>
+                  <button
+                    onClick={() => setIsEditingEmail(false)}
+                    className="px-2 py-1.5 bg-neutral-800 hover:bg-neutral-700 text-neutral-400 hover:text-white rounded-lg text-[11px] transition cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                </div>
+              ) : (
+                <div className="text-white font-semibold">{status?.channels?.gmail?.email || 'user@gmail.com'}</div>
+              )}
+
               <div className="text-[10px] text-neutral-400 pt-1">
                 Last Synced: {status?.channels?.gmail?.last_sync || 'Just now'}
               </div>
+            </div>
+          )}
+
+          {!gmailConnected && (
+            <div className="space-y-1.5">
+              <label className="text-[10px] font-mono uppercase text-neutral-400">Account Email Address</label>
+              <input
+                type="email"
+                value={customEmail}
+                onChange={e => setCustomEmail(e.target.value)}
+                placeholder="Enter your Gmail (e.g. user@gmail.com)"
+                className="w-full bg-[#111726] border border-white/[0.08] rounded-xl px-3 py-2 text-xs font-mono text-white placeholder-neutral-500 focus:outline-none focus:border-cyan-500/50"
+              />
             </div>
           )}
 

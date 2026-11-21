@@ -4,6 +4,20 @@ Application Configuration and Settings
 import os
 from typing import Optional
 
+def _get_database_url() -> str:
+    env_url = os.getenv("DATABASE_URL")
+    if env_url:
+        return env_url
+    is_serverless = bool(
+        os.getenv("VERCEL")
+        or os.getenv("AWS_LAMBDA_FUNCTION_NAME")
+        or os.getenv("NOW_REGION")
+        or (os.path.exists("/tmp") and os.name != "nt")
+    )
+    if is_serverless:
+        return "sqlite:////tmp/mandate_radar.db"
+    return f"sqlite:///{os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'mandate_radar.db'))}"
+
 class Settings:
     PROJECT_NAME: str = "Mandate Radar"
     VERSION: str = "2.0.0"
@@ -11,10 +25,8 @@ class Settings:
     
     # Database configuration: defaults to local SQLite file for zero-config dev,
     # and seamlessly uses PostgreSQL in production when DATABASE_URL is set.
-    DATABASE_URL: str = os.getenv(
-        "DATABASE_URL", 
-        f"sqlite:///{os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'mandate_radar.db'))}"
-    )
+    # On Vercel / serverless Linux environments, root is read-only so default to /tmp/mandate_radar.db.
+    DATABASE_URL: str = _get_database_url()
     
     # JWT & Auth
     SECRET_KEY: str = os.getenv("SECRET_KEY", "mandate_radar_dev_secret_key_change_in_prod_9482104")

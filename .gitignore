@@ -17,6 +17,10 @@ ENV/
 .env
 .env.local
 .env.*.local
+*.pem
+*.key
+*.crt
+*.pfx
 
 # IDEs
 .vscode/
@@ -28,10 +32,12 @@ ENV/
 Thumbs.db
 .DS_Store
 
-# Logs
+# Logs & Diagnostics
+*.log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+scratch/
 
 # SQLite Databases
 *.db

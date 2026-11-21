@@ -2,11 +2,12 @@ import React, { useRef, useEffect, useState } from 'react'
 
 export interface GraphNode {
   id: string
-  label: string
-  name: string
-  group: string
-  color: string
-  val: number
+  label?: string
+  name?: string
+  group?: string
+  type?: string
+  color?: string
+  val?: number
   properties?: Record<string, any>
   x?: number
   y?: number
@@ -16,11 +17,12 @@ export interface GraphNode {
 
 export interface GraphEdge {
   id: string
-  source: string | GraphNode
-  target: string | GraphNode
-  type: string
-  label: string
-  color: string
+  source: string | any
+  target: string | any
+  type?: string
+  label?: string
+  color?: string
+  properties?: Record<string, any>
 }
 
 interface GraphCanvasProps {
@@ -59,23 +61,25 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({
     const nodeMap = new Map<string, GraphNode>()
 
     // Arrange nodes in structured concentric orbital rings to avoid tangled hairballs
-    const initNodes = nodes.map((n) => {
+    const initNodes = (nodes || []).map((n) => {
       let radius = 180
       let baseAngle = Math.random() * 2 * Math.PI
+      const grp = n.group || n.type || 'merchant'
+      const val = n.val || (grp === 'parent' ? 20 : grp === 'merchant' ? 16 : (grp === 'user' || grp === 'person') ? 24 : 14)
 
-      if (n.group === 'person') {
+      if (grp === 'person' || grp === 'user') {
         // Center node
-        return { ...n, x: cx, y: cy, vx: 0, vy: 0, val: 24 }
-      } else if (n.group === 'mandate') {
+        return { ...n, group: grp, val: 24, x: cx, y: cy, vx: 0, vy: 0 }
+      } else if (grp === 'mandate') {
         // Inner ring: Mandates
         radius = 110 + Math.random() * 25
-      } else if (n.group === 'merchant') {
+      } else if (grp === 'merchant') {
         // Middle ring: Merchants
         radius = 200 + Math.random() * 35
-      } else if (n.group === 'parent') {
+      } else if (grp === 'parent') {
         // Outer ring: Corporate parents
         radius = 290 + Math.random() * 30
-      } else if (n.group === 'mechanism') {
+      } else if (grp === 'mechanism' || grp === 'rail') {
         // Outer ring: Payment rails
         radius = 280 + Math.random() * 35
       } else {
@@ -84,20 +88,21 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({
 
       const cloned: GraphNode = {
         ...n,
+        group: grp,
+        val,
         x: cx + Math.cos(baseAngle) * radius,
         y: cy + Math.sin(baseAngle) * radius,
         vx: 0,
-        vy: 0,
-        val: n.group === 'parent' ? 20 : n.group === 'merchant' ? 16 : n.group === 'mandate' ? 14 : 12
+        vy: 0
       }
       nodeMap.set(n.id, cloned)
       return cloned
     })
 
-    const initEdges = edges.map(e => ({
+    const initEdges = (edges || []).map(e => ({
       ...e,
-      sourceObj: nodeMap.get(typeof e.source === 'string' ? e.source : e.source.id),
-      targetObj: nodeMap.get(typeof e.target === 'string' ? e.target : e.target.id)
+      sourceObj: nodeMap.get(typeof e.source === 'string' ? e.source : e.source?.id),
+      targetObj: nodeMap.get(typeof e.target === 'string' ? e.target : e.target?.id)
     }))
 
     simNodesRef.current = initNodes
@@ -274,14 +279,15 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({
       ctx.beginPath()
       ctx.arc(n.x || 0, n.y || 0, radius, 0, 2 * Math.PI)
 
-      // Color coding with subtle contrast
+      // Color coding according to Mandate Radar Neo4j track specs
       let nodeColor = n.color || '#475569'
-      if (n.group === 'parent') nodeColor = '#6366f1' // Indigo
-      if (n.group === 'merchant') nodeColor = '#10b981' // Emerald
-      if (n.group === 'mechanism') nodeColor = '#ec4899' // Pink
-      if (n.group === 'descriptor') nodeColor = '#8b5cf6' // Purple
-      if (n.group === 'mandate') nodeColor = '#f59e0b' // Amber
-      if (n.group === 'person') nodeColor = '#06b6d4' // Cyan
+      const grp = n.group || n.type || 'merchant'
+      if (grp === 'parent') nodeColor = '#8B7CFF' // Violet (Parent Company)
+      if (grp === 'merchant') nodeColor = '#2DE2B5' // Radar Teal (Merchant)
+      if (grp === 'mechanism' || grp === 'rail') nodeColor = '#4DA3FF' // Blue (Payment Rail)
+      if (grp === 'descriptor') nodeColor = '#a855f7' // Purple (Descriptor)
+      if (grp === 'mandate') nodeColor = '#FFB547' // Amber (Cancellation Path / Mandate)
+      if (grp === 'person' || grp === 'user') nodeColor = '#3DDC97' // Green (Verified User)
 
       ctx.fillStyle = isDimmed ? 'rgba(40, 50, 70, 0.4)' : nodeColor
       ctx.fill()
@@ -299,15 +305,17 @@ export const GraphCanvas: React.FC<GraphCanvasProps> = ({
       ctx.textAlign = 'center'
 
       // Truncate cleanly so labels never overlap
+      const displayName = n.name || n.properties?.name || n.label || n.id || ''
       const maxLen = isSelected || isHovered ? 24 : 16
-      const labelText = n.name.length > maxLen ? n.name.slice(0, maxLen - 2) + '…' : n.name
+      const labelText = displayName.length > maxLen ? displayName.slice(0, maxLen - 2) + '…' : displayName
       ctx.fillText(labelText, n.x || 0, (n.y || 0) + radius + 12)
 
       // Category Pill Above
       if ((isSelected || isHovered || transform.scale > 1.0) && !isDimmed) {
         ctx.fillStyle = '#64748b'
         ctx.font = '7.5px JetBrains Mono'
-        ctx.fillText(n.label.toUpperCase(), n.x || 0, (n.y || 0) - radius - 3)
+        const categoryLabel = (n.label || grp || '').toUpperCase()
+        ctx.fillText(categoryLabel, n.x || 0, (n.y || 0) - radius - 3)
       }
     }
 

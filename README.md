@@ -3,8 +3,6 @@
 
 **Fintech Solution | Neo4j Knowledge Graph**
 
-🔗 **Repository Link & Live Documentation**: [https://github.com/ninjuu19/mandate-radar-tabahi4](https://github.com/ninjuu19/mandate-radar-tabahi4)
-
 [![Python](https://img.shields.io/badge/Python-3.10+-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.110+-009688?logo=fastapi)](https://fastapi.tiangolo.com/)
 [![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black)](https://react.dev/)
@@ -344,35 +342,100 @@ Never commit database credentials or sensitive connection information to the rep
 ## 📁 Project Structure
 
 ```text
-mandate-debit-tabahi4/
+mandate-radar-tabahi4/
 │
 ├── backend/
-│   ├── main.py
-│   ├── detector.py
-│   ├── reference_data.py
-│   ├── neo4j_service.py
-│   ├── synthetic_data.py
-│   └── requirements.txt
+│   ├── main.py                  # FastAPI application with REST endpoints
+│   ├── detector.py              # Deterministic detection & SHA-256 charge hashing
+│   ├── neo4j_service.py         # Neo4j Aura Cypher traversals & embedded engine
+│   ├── reference_data.py        # Verified merchants & 8 functional capabilities
+│   ├── bundle_reference.py      # Curated bundle tiers & child inclusions
+│   ├── telecom_bundles.py       # User-confirmed telecom & card bundle placeholders
+│   ├── synthetic_data.py        # 12-month synthetic benchmark statement generator
+│   ├── requirements.txt         # Backend Python dependencies
+│   ├── app/                     # Domain-driven backend modules & services
+│   └── tests/                   # 11-step Acceptance test suite & synthetic CSVs
+│       ├── test_all_11_acceptance_criteria.py
+│       └── test_csvs/
 │
 ├── frontend/
 │   ├── src/
-│   │   ├── App.tsx
-│   │   ├── main.tsx
-│   │   ├── style.css
-│   │   └── components/
-│   │       └── GraphCanvas.tsx
-│   │
-│   ├── index.html
-│   ├── package.json
-│   ├── tsconfig.json
-│   ├── vite.config.ts
-│   └── dist/
+│   │   ├── App.tsx              # Main React application & view router
+│   │   ├── components/          # Luxury Fernwood components & radar visualizer
+│   │   ├── lib/                 # Types, API client, and sample datasets
+│   │   └── style.css            # Fernwood Sand Beige & Forest Green theme
+│   ├── dist/                    # Compiled production bundle
+│   └── package.json
 │
-├── .gitignore
-├── LICENSE
+├── api/                         # Vercel serverless deployment adapter
 ├── README.md
 └── run.py
 ```
+
+---
+
+## 🧭 The End-to-End User Flow & Cypher Graph Intelligence
+
+Mandate Radar is designed for CEOs, startup administration heads, and individuals managing recurring spend. The flow is strictly scoped to the authenticated user ID (`user_id`).
+
+### Step 1: Statement Ingest with Multi-Account Support
+- Users upload one or more bank statement CSV files (`POST /api/statement/upload`).
+- Statements can be tagged with an optional account label (e.g., *HDFC Salary Card*, *ICICI Current Account*).
+- High-value business transactions (e.g. ₹85,000 AWS invoices) and personal micro-debits are handled uniformly.
+
+### Step 2: Idempotent Detection & Honest Billing Classification
+- Charges are deterministically hashed via SHA-256 using `date + amount + descriptor + account + user_id + row_index`. Re-uploading statements produces **0 duplicate charges**.
+- Recurring charges with monthly coefficient of variation > 10% are classified as `usage_based` (e.g. AWS, Twilio, OpenAI API) vs `fixed`.
+- **Honest Savings Math**: `usage_based` mandates are strictly excluded from fixed contractual savings calculations to prevent misleading estimates.
+
+### Step 3: Multi-Hop Neo4j Graph Analyses (All in Cypher)
+1. **Bundle Overlaps (Multi-hop Variable-Length Traversal)**:
+   - Evaluates `(a:Vendor)-[:OFFERS|INCLUDES*1..6]->(b:Vendor)` where user pays for both a bundle and its child service separately (e.g., YouTube Premium + YouTube Music, Apple One + Apple Music).
+2. **Capability / Functional Overlaps (PROVIDES Clustering)**:
+   - Groups mandates where multiple vendors provide the same capability (e.g. Slack Pro + Microsoft 365 providing `team_chat`), with anti-self-bundle checks and 6-month reference staleness thresholds.
+3. **Duplicate Vendors across Multiple Accounts**:
+   - Detects when the same vendor is charged across multiple corporate cards or bank accounts as a consolidation candidate.
+4. **Flagged Mandates**:
+   - Detects silent price creep, trial conversion traps, and dormant/zombie subscriptions.
+5. **Spend Concentration via Graph Aggregation**:
+   - Aggregates annual commitments across Category, Vendor, Account, Tag, Mechanism, and Billing Type.
+
+### Step 4: User Confirmation & Decision Anti-Join
+- User reviews findings in the confirmation interface (`POST /api/findings/{id}/decision`).
+- Kept payments become `keep_confirmed`; redundant mandates are marked `suggested_cancel`.
+- Every choice is persisted as a `(:Decision {finding_key})` node linked to `(:Person)`, guaranteeing confirmed choices are **never re-prompted**.
+
+### Step 5: Cancellation Guidance & "Marked Cancelled" Status
+- Clicking "Cancel this mandate" displays mechanism-specific guidance (UPI AutoPay, Card SI, NACH, Play Store, App Store).
+- User confirms cancellation, setting the mandate status to **Marked cancelled** (`marked_cancelled` / `cancel_confirmed_by_user`).
+
+### Step 6: Automated Reconciliation on Subsequent Statements
+- **3-Day In-Flight Grace Window**: Charges appearing within 3 days of cancellation confirmation are recognized as in-flight debits and do not trigger alerts.
+- **Still Charging Rogue Debit Alerts**: Charges appearing after the 3-day grace window transition the mandate to `still_charging`, increment `reminder_count`, and alert the user with the exact debit date, amount, and escalation instructions.
+- **Verified Cancelled**: When a subsequent statement covers the billing cycle past `expected_next_charge_date` with zero debits, the mandate transitions to **Verified cancelled** (`verified_cancelled`).
+
+---
+
+## 🧪 Running the 11 Acceptance Checks
+
+A dedicated acceptance suite validates all 11 hackathon criteria against synthetic CSV statements:
+
+```bash
+python backend/tests/test_all_11_acceptance_criteria.py
+```
+
+Criteria verified:
+1. Capability overlap with annual savings calculation
+2. Bundle overlap with graph path evidence
+3. Same vendor charged across two accounts
+4. Decision persistence (not re-flagged after 'keep both')
+5. Marked cancelled status transition
+6. Second statement with post-grace charge returns `still_charging` alert
+7. Second statement with zero charges confirms `verified_cancelled`
+8. Re-uploading statement creates 0 duplicate charge nodes (idempotency)
+9. Tenant isolation across Person, Mandate, Account, and Charge nodes
+10. Analyses 1-3 execute as Cypher queries
+11. Large statement with high-value transactions runs identically
 
 ---
 

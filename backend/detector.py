@@ -1,11 +1,14 @@
 """
 Mandate Radar Deterministic Detection Engine
+============================================
 Strictly rules-based, non-probabilistic Pandas/Python engine.
 Detects recurring cadence, price hikes, trial traps, zombie/unused charges,
-and safely eliminates hard negatives.
+tags billing types ('fixed' vs 'usage_based'), calculates expected next charge dates,
+and computes idempotent cryptographic charge hashes.
 """
 
 from datetime import datetime
+import hashlib
 import re
 import numpy as np
 import pandas as pd
@@ -13,11 +16,33 @@ from reference_data import REFERENCE_MERCHANTS, PAYMENT_MECHANISMS, HARD_NEGATIV
 
 def clean_descriptor(descriptor: str) -> str:
     """Cleans punctuation, ref IDs, and trailing whitespace for fallback grouping."""
-    text = descriptor.upper()
+    text = str(descriptor).upper()
     text = re.sub(r"[#*\/\\\-_:]", " ", text)
     text = re.sub(r"\b\d{4,}\b", "", text) # Remove long transaction or reference numbers
     text = re.sub(r"\s+", " ", text).strip()
     return text
+
+def generate_charge_hash(user_id: str, account_label: str, date: str, amount: float, descriptor: str, ref_or_row_idx: str = "") -> str:
+    """
+    Computes an idempotent cryptographic hash for a transaction line:
+    SHA256(user_id + account_label + date + amount + clean_descriptor + ref_or_row_idx)
+    Guarantees that re-uploading the same statement creates zero duplicates, while two
+    legitimate identical charges on the same day remain distinct.
+    """
+    raw = f"{user_id}:{account_label}:{date}:{amount:.2f}:{clean_descriptor(descriptor)}:{ref_or_row_idx}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+def compute_expected_next_charge_date(last_charged_dt: pd.Timestamp, cadence: str) -> str:
+    """Calculates the expected next debit date based on detected interval."""
+    if cadence == "MONTHLY":
+        next_dt = last_charged_dt + pd.Timedelta(days=30)
+    elif cadence == "QUARTERLY":
+        next_dt = last_charged_dt + pd.Timedelta(days=91)
+    elif cadence == "ANNUAL":
+        next_dt = last_charged_dt + pd.Timedelta(days=365)
+    else:
+        next_dt = last_charged_dt + pd.Timedelta(days=30)
+    return next_dt.strftime("%Y-%m-%d")
 
 def resolve_merchant_from_descriptor(descriptor: str):
     """
@@ -26,7 +51,7 @@ def resolve_merchant_from_descriptor(descriptor: str):
     """
     for m in REFERENCE_MERCHANTS:
         for pattern in m.get("descriptors", []):
-            if re.search(pattern, descriptor, re.IGNORECASE):
+            if re.search(pattern, str(descriptor), re.IGNORECASE):
                 return m
     return None
 
@@ -47,9 +72,16 @@ def detect_payment_mechanism(descriptor: str, ref_str: str = ""):
         return "CARD_SI"
     return "DIRECT_MERCHANT"
 
-def analyze_statement(transactions_data: list, usage_feed: dict = None):
+def analyze_statement(
+    transactions_data: list,
+    usage_feed: dict = None,
+    user_id: str = "user_primary",
+    account_label: str = "Primary Account"
+):
     """
     Main detection pipeline running on statement transactions.
+    Supports variable-amount recurring charges (usage_based vs fixed contracts),
+    multi-statement idempotent hashing, and post-cancellation charge projections.
     """
     if usage_feed is None:
         usage_feed = {}
@@ -61,12 +93,15 @@ def analyze_statement(transactions_data: list, usage_feed: dict = None):
             "rejected_transactions": [],
             "annual_committed_total": 0.0,
             "annual_potential_savings": 0.0,
+            "fixed_committed_total": 0.0,
+            "usage_based_run_rate_total": 0.0,
             "metrics": {
                 "total_transactions": 0,
                 "mandates_found": 0,
                 "price_hikes": 0,
                 "trial_conversions": 0,
                 "zombie_subscriptions": 0,
+                "usage_based_mandates": 0,
                 "hard_negatives_filtered": 0
             }
         }
@@ -75,6 +110,20 @@ def analyze_statement(transactions_data: list, usage_feed: dict = None):
     df["amount_num"] = pd.to_numeric(df["amount"], errors="coerce").fillna(0.0)
     df["raw_descriptor"] = df["descriptor"].fillna("").astype(str)
     df["ref_str"] = df.get("ref", pd.Series([""] * len(df))).fillna("").astype(str)
+    df["row_idx"] = df.index.astype(str)
+
+    # Attach idempotent charge hash to each raw transaction
+    df["charge_hash"] = df.apply(
+        lambda r: generate_charge_hash(
+            user_id=user_id,
+            account_label=account_label,
+            date=str(r["date"]),
+            amount=float(r["amount_num"]),
+            descriptor=r["raw_descriptor"],
+            ref_or_row_idx=str(r["ref_str"]) or str(r["row_idx"])
+        ),
+        axis=1
+    )
 
     # 1. First Pass: Resolve against reference graph or fallback to cleaned key
     def get_group_key(row):
@@ -110,12 +159,26 @@ def analyze_statement(transactions_data: list, usage_feed: dict = None):
         if count == 1:
             # Check if this single charge matches a known annual subscription in reference
             resolved_ref = resolve_merchant_from_descriptor(sample_desc)
-            if resolved_ref and "ANNUAL" in resolved_ref.get("supported_cadences", []):
+            amount = float(sorted_group["amount_num"].iloc[0])
+            is_annual = resolved_ref and "ANNUAL" in resolved_ref.get("supported_cadences", []) and (amount >= 499.0 or resolved_ref.get("supported_cadences") == ["ANNUAL"])
+            if is_annual:
                 # Annual mandate registered
-                amount = float(sorted_group["amount_num"].iloc[0])
                 annual_committed = amount
                 mechanism = detect_payment_mechanism(sample_desc, sorted_group["ref_str"].iloc[0])
                 mech_details = PAYMENT_MECHANISMS.get(mechanism, PAYMENT_MECHANISMS["DIRECT_MERCHANT"])
+                first_date_dt = sorted_group["date_dt"].iloc[0]
+                expected_next = compute_expected_next_charge_date(first_date_dt, "ANNUAL")
+
+                # Prepare charge history with idempotent hashes
+                history = []
+                for _, row in sorted_group.iterrows():
+                    history.append({
+                        "id": row["charge_hash"],
+                        "date": str(row["date"]),
+                        "amount": float(row["amount_num"]),
+                        "descriptor": row["raw_descriptor"],
+                        "account_label": account_label
+                    })
 
                 mandates.append({
                     "id": f"mandate_{resolved_ref['id']}",
@@ -127,20 +190,24 @@ def analyze_statement(transactions_data: list, usage_feed: dict = None):
                     "descriptor": sample_desc,
                     "is_recognized": True,
                     "cadence": "ANNUAL",
+                    "billing_type": "fixed",
                     "latest_amount": amount,
+                    "initial_amount": amount,
                     "annual_committed_cost": annual_committed,
                     "charge_count": 1,
                     "first_seen": sorted_group["date"].iloc[0],
                     "last_charged": sorted_group["date"].iloc[0],
+                    "expected_next_charge_date": expected_next,
+                    "account_label": account_label,
                     "mechanism": mechanism,
                     "mechanism_name": mech_details["name"],
                     "flag": "HEALTHY",
-                    "flag_reason": "Verified active annual mandate.",
+                    "flag_reason": "Verified active annual contract.",
                     "confidence_score": 0.94,
                     "savings_if_cancelled": annual_committed,
                     "pitfall": resolved_ref.get("cancellation_pitfall", ""),
                     "cancellation_steps": mech_details["cancellation_steps"],
-                    "history": sorted_group[["id", "date", "amount", "descriptor"]].to_dict(orient="records")
+                    "history": history
                 })
                 continue
             else:
@@ -170,7 +237,7 @@ def analyze_statement(transactions_data: list, usage_feed: dict = None):
             })
             continue
 
-        # Infer cadence with tolerance bands (Section 4)
+        # Infer cadence with tolerance bands
         cadence = None
         if 24 <= median_gap <= 36: # Monthly ±5 days
             cadence = "MONTHLY"
@@ -191,11 +258,12 @@ def analyze_statement(transactions_data: list, usage_feed: dict = None):
             })
             continue
 
-        # Analyze amount stability & identify flags (Section 4)
         latest_amount = float(amounts[-1])
         initial_amount = float(amounts[0])
+        last_charged_dt = sorted_group["date_dt"].iloc[-1]
+        expected_next = compute_expected_next_charge_date(last_charged_dt, cadence)
 
-        # Step changes > 3%
+        # Analyze amount stability & step changes > 3%
         diffs = []
         for i in range(1, len(amounts)):
             prev = amounts[i-1]
@@ -209,11 +277,22 @@ def analyze_statement(transactions_data: list, usage_feed: dict = None):
         if len(diffs) > 2 and hard_negative_match:
             rejected.append({
                 "descriptor": sample_desc,
-                "reason": f"Variable usage-based charges detected ({len(diffs)} price swings >3%). Billed for metered consumption, not fixed commitment.",
+                "reason": f"Fluctuating utility consumption ({len(diffs)} price swings >3%). Billed for metered consumption, not recurring mandate.",
                 "count": count,
                 "amounts": amounts[:6]
             })
             continue
+
+        # Billing Type Classification: 'usage_based' vs 'fixed'
+        # Compute coefficient of variation across historical amounts
+        mean_amt = float(np.mean(amounts))
+        std_amt = float(np.std(amounts)) if len(amounts) > 1 else 0.0
+        cv = (std_amt / mean_amt) if mean_amt > 0 else 0.0
+
+        # If variance > 10% across cycles (e.g. AWS, Twilio, OpenAI API), tag as usage_based
+        is_usage_based = cv > 0.10 and len(diffs) >= 2
+
+        billing_type = "usage_based" if is_usage_based else "fixed"
 
         # Flag Determination
         flag = "HEALTHY"
@@ -227,16 +306,20 @@ def analyze_statement(transactions_data: list, usage_feed: dict = None):
             flag_reason = f"Trial conversion trap: Nominal initiation charge of ₹{initial_amount:.0f} auto-escalated to recurring ₹{latest_amount:.0f}/cycle ({ratio:.1f}x jump)."
             confidence = 0.99
 
-        # 2. Silent Price Hike Check: Exactly 1 step up > 3% in an otherwise stable series
-        elif len(diffs) == 1 and diffs[0][3] > 3.0:
+        # 2. Silent Price Hike Check: Exactly 1 step up > 3% in an otherwise stable fixed series
+        elif not is_usage_based and len(diffs) == 1 and diffs[0][3] > 3.0:
             step_idx, old_amt, new_amt, pct_increase = diffs[0]
             annual_leakage = (new_amt - old_amt) * annual_multiplier
             flag = "PRICE_HIKE"
             flag_reason = f"Silent price increase of +{pct_increase:.1f}% (₹{old_amt:.0f} ➔ ₹{new_amt:.0f}). Stealth extra cost: ₹{annual_leakage:,.0f}/year."
             confidence = 0.97
 
-        # 3. Unused / Zombie Subscription Check
-        # Live mandate with no usage activity for 75+ days and at least 2 charges paid since
+        # 3. Usage-based description note
+        elif is_usage_based:
+            flag_reason = f"Usage-based {cadence.lower()} billing: Fluctuating metered consumption (trailing run-rate: ₹{latest_amount * annual_multiplier:,.0f}/yr)."
+            confidence = 0.92
+
+        # 4. Unused / Zombie Subscription Check
         merchant_info = resolve_merchant_from_descriptor(sample_desc)
         merchant_id = merchant_info["id"] if merchant_info else None
 
@@ -244,7 +327,6 @@ def analyze_statement(transactions_data: list, usage_feed: dict = None):
         if last_activity_date_str and flag not in ["PRICE_HIKE", "TRIAL_CONVERTED"]:
             last_activity = pd.to_datetime(last_activity_date_str)
             days_inactive = (statement_end_date - last_activity).days
-            # Count charges occurred after last_activity
             charges_since = sum(1 for d in date_series if d > last_activity)
 
             if days_inactive >= 75 and charges_since >= 2:
@@ -253,7 +335,15 @@ def analyze_statement(transactions_data: list, usage_feed: dict = None):
                 flag_reason = f"Zombie subscription: Zero account activity for {days_inactive} days. ₹{wasted:,.0f} debited across {charges_since} unutilized cycles."
                 confidence = 0.96
 
-        annual_committed = latest_amount * annual_multiplier
+        # Annual Committed Exposure
+        if is_usage_based:
+            annual_committed = round(mean_amt * annual_multiplier, 2)
+            # Usage-based mandates are excluded from guaranteed fixed cancellation savings
+            savings_if_cancelled = 0.0
+        else:
+            annual_committed = round(latest_amount * annual_multiplier, 2)
+            savings_if_cancelled = annual_committed
+
         mechanism = detect_payment_mechanism(sample_desc, sorted_group["ref_str"].iloc[-1])
         mech_details = PAYMENT_MECHANISMS.get(mechanism, PAYMENT_MECHANISMS["DIRECT_MERCHANT"])
 
@@ -263,6 +353,17 @@ def analyze_statement(transactions_data: list, usage_feed: dict = None):
         parent_id = merchant_info.get("parent_id") if is_recognized else None
         parent_name = merchant_info.get("parent") if is_recognized else "Independent / Unmapped"
         pitfall = merchant_info.get("cancellation_pitfall", "") if is_recognized else "Verify merchant cancellation terms."
+
+        # History with idempotent hashes
+        history = []
+        for _, row in sorted_group.iterrows():
+            history.append({
+                "id": row["charge_hash"],
+                "date": str(row["date"]),
+                "amount": float(row["amount_num"]),
+                "descriptor": row["raw_descriptor"],
+                "account_label": account_label
+            })
 
         mandates.append({
             "id": f"mandate_{merchant_id or clean_descriptor(sample_desc)[:16].replace(' ', '_')}",
@@ -274,41 +375,51 @@ def analyze_statement(transactions_data: list, usage_feed: dict = None):
             "descriptor": sample_desc,
             "is_recognized": is_recognized,
             "cadence": cadence,
+            "billing_type": billing_type,
             "latest_amount": latest_amount,
             "initial_amount": initial_amount,
             "annual_committed_cost": annual_committed,
             "charge_count": count,
             "first_seen": sorted_group["date"].iloc[0],
             "last_charged": sorted_group["date"].iloc[-1],
+            "expected_next_charge_date": expected_next,
+            "account_label": account_label,
             "mechanism": mechanism,
             "mechanism_name": mech_details["name"],
             "flag": flag,
             "flag_reason": flag_reason,
             "confidence_score": confidence,
-            "savings_if_cancelled": annual_committed,
+            "savings_if_cancelled": savings_if_cancelled,
             "pitfall": pitfall,
             "support_email": merchant_info.get("support_email", "support@merchant.com") if is_recognized else "",
             "grievance_email": merchant_info.get("grievance_email", "grievance@merchant.com") if is_recognized else "",
             "official_website": merchant_info.get("official_website", "") if is_recognized else "",
             "cancellation_steps": mech_details["cancellation_steps"],
-            "history": sorted_group[["id", "date", "amount", "descriptor"]].to_dict(orient="records")
+            "history": history
         })
 
     # Sort mandates: flags with highest risk first, then by annual committed spend
     flag_priority = {"UNUSED_ZOMBIE": 1, "PRICE_HIKE": 2, "TRIAL_CONVERTED": 3, "HEALTHY": 4}
     mandates.sort(key=lambda m: (flag_priority.get(m["flag"], 5), -m["annual_committed_cost"]))
 
-    annual_committed_total = sum(m["annual_committed_cost"] for m in mandates)
-    potential_savings = sum(m["annual_committed_cost"] for m in mandates if m["flag"] != "HEALTHY")
+    fixed_committed_total = sum(m["annual_committed_cost"] for m in mandates if m.get("billing_type") != "usage_based")
+    usage_based_run_rate_total = sum(m["annual_committed_cost"] for m in mandates if m.get("billing_type") == "usage_based")
+    annual_committed_total = fixed_committed_total + usage_based_run_rate_total
+
+    # Only fixed flagged mandates produce guaranteed annual potential savings
+    potential_savings = sum(m["annual_committed_cost"] for m in mandates if m["flag"] != "HEALTHY" and m.get("billing_type") != "usage_based")
 
     price_hikes_count = sum(1 for m in mandates if m["flag"] == "PRICE_HIKE")
     trial_conv_count = sum(1 for m in mandates if m["flag"] == "TRIAL_CONVERTED")
     zombies_count = sum(1 for m in mandates if m["flag"] == "UNUSED_ZOMBIE")
+    usage_based_count = sum(1 for m in mandates if m.get("billing_type") == "usage_based")
 
     return {
         "mandates": mandates,
         "rejected_transactions": rejected,
         "annual_committed_total": round(annual_committed_total, 2),
+        "fixed_committed_total": round(fixed_committed_total, 2),
+        "usage_based_run_rate_total": round(usage_based_run_rate_total, 2),
         "annual_potential_savings": round(potential_savings, 2),
         "metrics": {
             "total_transactions": len(df),
@@ -316,6 +427,7 @@ def analyze_statement(transactions_data: list, usage_feed: dict = None):
             "price_hikes": price_hikes_count,
             "trial_conversions": trial_conv_count,
             "zombie_subscriptions": zombies_count,
+            "usage_based_mandates": usage_based_count,
             "hard_negatives_filtered": len(rejected)
         }
     }
