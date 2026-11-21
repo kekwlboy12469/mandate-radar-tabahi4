@@ -40,6 +40,20 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Initialize Relational Database & Mount API v1
+db_initialized = False
+try:
+    from app.core.db import init_db, SessionLocal
+    from app.services.seed_service import seed_database
+    from app.api.v1 import api_v1_router
+    init_db()
+    with SessionLocal() as db_session:
+        seed_database(db_session)
+    app.include_router(api_v1_router)
+    db_initialized = True
+except Exception as e:
+    print(f"Warning: Database initialization deferred: {e}")
+
 # Initialize Neo4j Service
 neo4j_graph = Neo4jKnowledgeGraph()
 
@@ -77,12 +91,28 @@ class Neo4jConnectRequest(BaseModel):
     user: str = "neo4j"
     password: str
 
+class OverlapDecisionRequest(BaseModel):
+    user_id: Optional[str] = "user_primary"
+    kept_mandate_ids: List[str] = []
+    cancel_mandate_ids: List[str] = []
+
+class CancelConfirmRequest(BaseModel):
+    user_id: Optional[str] = "user_primary"
+    cancel_date: Optional[str] = None
+
+class ReconcileRequest(BaseModel):
+    user_id: Optional[str] = "user_primary"
+    transactions: List[Dict[str, Any]]
+    statement_end_date: Optional[str] = None
+
 @app.get("/api/info")
 def get_api_info():
     return {
         "service": "Mandate Radar API",
+        "version": "2.0.0",
         "theme": "Fintech - The Auto Debits Nobody Can Find",
         "track": "Neo4j (Best Use of Neo4j)",
+        "database_status": "ACTIVE_PERSISTENT_STORE" if db_initialized else "DEFERRED",
         "neo4j_status": "CONNECTED" if neo4j_graph.is_connected else "EMBEDDED_GRAPH_MODE",
         "reference_merchants_count": len(REFERENCE_MERCHANTS)
     }
@@ -128,9 +158,20 @@ def run_analysis(payload: AnalyzeRequest):
 
     # Run deterministic detector
     analysis_result = analyze_statement(txs, usage)
+    statement_end = max((t["date"] for t in txs), default=None)
 
-    # Sync detected mandates into Neo4j graph
-    neo4j_graph.sync_statement_mandates(user_name, analysis_result["mandates"])
+    # 1. Run post-cancellation reconciliation first for any previously cancelled mandates
+    reconciliation = neo4j_graph.reconcile_cancelled_mandates(
+        uid="user_primary",
+        transactions=txs,
+        statement_end_date=statement_end
+    )
+
+    # 2. Sync detected mandates into Neo4j graph
+    neo4j_graph.sync_statement_mandates(user_name, analysis_result["mandates"], person_id="user_primary")
+
+    # 3. Find bundle overlaps using multi-hop Cypher traversal
+    overlaps = neo4j_graph.find_bundle_overlaps(uid="user_primary")
 
     # Attach notification context to mandates
     enhanced_mandates = []
@@ -145,15 +186,22 @@ def run_analysis(payload: AnalyzeRequest):
         enhanced_mandates.append(m)
 
     analysis_result["mandates"] = enhanced_mandates
+    analysis_result["bundle_overlaps"] = overlaps
+    analysis_result["reconciliation"] = reconciliation
 
     # Compute hero metrics
     annual_committed = analysis_result["annual_committed_total"]
+    overlap_savings = sum(o.get("potential_annual_saving", 0.0) for o in overlaps)
     analysis_result["hero_metrics"] = {
         "annual_committed_total": annual_committed,
         "monthly_equivalent": round(annual_committed / 12.0, 2),
-        "potential_savings": analysis_result["annual_potential_savings"],
+        "potential_savings": analysis_result["annual_potential_savings"] + overlap_savings,
         "total_mandates_found": len(enhanced_mandates),
-        "flagged_issues_count": sum(1 for m in enhanced_mandates if m["flag"] != "HEALTHY")
+        "flagged_issues_count": sum(1 for m in enhanced_mandates if m["flag"] != "HEALTHY"),
+        "bundle_overlaps_count": len(overlaps),
+        "bundle_overlap_savings": overlap_savings,
+        "still_charging_count": len(reconciliation.get("still_charging", [])),
+        "verified_cancelled_count": len(reconciliation.get("verified_cancelled", []))
     }
 
     return analysis_result
@@ -162,7 +210,8 @@ def run_analysis(payload: AnalyzeRequest):
 async def upload_statement_csv(file: UploadFile = File(...)):
     """
     Parses an uploaded bank statement CSV file with dynamic column mapping,
-    validates headers, handles empty or malformed files, and runs detection.
+    validates headers, handles empty or malformed files, runs detection,
+    executes Neo4j bundle overlap analysis, and performs post-cancellation reconciliation.
     """
     try:
         content = await file.read()
@@ -231,15 +280,36 @@ async def upload_statement_csv(file: UploadFile = File(...)):
 
         # Run detection
         analysis_result = analyze_statement(transactions, cached_usage)
-        neo4j_graph.sync_statement_mandates("Uploaded Statement User", analysis_result["mandates"])
+        statement_end = max((t["date"] for t in transactions), default=None)
+
+        # 1. Post-cancellation reconciliation with 3-day grace window
+        reconciliation = neo4j_graph.reconcile_cancelled_mandates(
+            uid="user_primary",
+            transactions=transactions,
+            statement_end_date=statement_end
+        )
+
+        # 2. Sync detected mandates into Neo4j
+        neo4j_graph.sync_statement_mandates("Uploaded Statement User", analysis_result["mandates"], person_id="user_primary")
+
+        # 3. Multi-hop bundle overlap traversal in Neo4j
+        overlaps = neo4j_graph.find_bundle_overlaps(uid="user_primary")
+
+        analysis_result["bundle_overlaps"] = overlaps
+        analysis_result["reconciliation"] = reconciliation
 
         annual_committed = analysis_result["annual_committed_total"]
+        overlap_savings = sum(o.get("potential_annual_saving", 0.0) for o in overlaps)
         analysis_result["hero_metrics"] = {
             "annual_committed_total": annual_committed,
             "monthly_equivalent": round(annual_committed / 12.0, 2),
-            "potential_savings": analysis_result["annual_potential_savings"],
+            "potential_savings": analysis_result["annual_potential_savings"] + overlap_savings,
             "total_mandates_found": len(analysis_result["mandates"]),
-            "flagged_issues_count": sum(1 for m in analysis_result["mandates"] if m["flag"] != "HEALTHY")
+            "flagged_issues_count": sum(1 for m in analysis_result["mandates"] if m["flag"] != "HEALTHY"),
+            "bundle_overlaps_count": len(overlaps),
+            "bundle_overlap_savings": overlap_savings,
+            "still_charging_count": len(reconciliation.get("still_charging", [])),
+            "verified_cancelled_count": len(reconciliation.get("verified_cancelled", []))
         }
         analysis_result["filename"] = file.filename
         analysis_result["rows_parsed"] = len(transactions)
@@ -250,6 +320,73 @@ async def upload_statement_csv(file: UploadFile = File(...)):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to parse statement: {str(e)}")
+
+@app.get("/api/overlaps")
+def get_bundle_overlaps(uid: str = "user_primary"):
+    """
+    Identifies multi-hop bundle overlaps in Neo4j where one paid service already includes another.
+    """
+    overlaps = neo4j_graph.find_bundle_overlaps(uid=uid)
+    total_savings = sum(o.get("potential_annual_saving", 0.0) for o in overlaps)
+    return {
+        "status": "SUCCESS",
+        "overlap_count": len(overlaps),
+        "total_potential_savings": round(total_savings, 2),
+        "overlaps": overlaps
+    }
+
+@app.post("/api/overlaps/decision")
+def record_overlap_decision(req: OverlapDecisionRequest):
+    """
+    Persists user's confirmation of kept vs cancelled mandates into Neo4j graph.
+    """
+    res = neo4j_graph.record_overlap_decision(
+        uid=req.user_id or "user_primary",
+        kept_mandate_ids=req.kept_mandate_ids,
+        cancel_mandate_ids=req.cancel_mandate_ids
+    )
+    return res
+
+@app.get("/api/mandates")
+def get_mandates_portfolio(uid: str = "user_primary"):
+    """
+    Returns user's mandates with graph-tracked lifecycle statuses:
+    active, flagged_overlap, keep_confirmed, suggested_cancel, cancel_confirmed_by_user,
+    still_charging, verified_cancelled.
+    """
+    nodes = [n for n in neo4j_graph.nodes if n["group"] == "mandate"]
+    portfolio = []
+    for n in nodes:
+        props = n.get("properties", {})
+        portfolio.append(props)
+    return {
+        "user_id": uid,
+        "total_mandates": len(portfolio),
+        "mandates": portfolio
+    }
+
+@app.post("/api/mandates/{mandate_id}/cancel-confirm")
+def confirm_mandate_cancellation(mandate_id: str, req: Optional[CancelConfirmRequest] = None):
+    """
+    Records user confirmation that they have cancelled the mandate in their banking/merchant app.
+    Lifecycle status moves to 'cancel_confirmed_by_user'.
+    """
+    uid = req.user_id if req and req.user_id else "user_primary"
+    c_date = req.cancel_date if req and req.cancel_date else None
+    res = neo4j_graph.confirm_mandate_cancellation(uid=uid, mandate_id=mandate_id, cancel_date=c_date)
+    return res
+
+@app.post("/api/reconcile")
+def run_post_cancellation_reconciliation(req: ReconcileRequest):
+    """
+    Audits new statement charges against cancelled mandates with GRACE_WINDOW_DAYS = 3.
+    """
+    report = neo4j_graph.reconcile_cancelled_mandates(
+        uid=req.user_id or "user_primary",
+        transactions=req.transactions,
+        statement_end_date=req.statement_end_date
+    )
+    return report
 
 @app.post("/api/generate-email")
 def generate_cancellation_email(req: EmailDraftRequest):

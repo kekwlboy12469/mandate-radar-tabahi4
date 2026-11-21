@@ -33,6 +33,10 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
+# SQLite Databases
+*.db
+*.sqlite3
+
 # Vercel
 .vercel/
 deploy_to_vercel.py

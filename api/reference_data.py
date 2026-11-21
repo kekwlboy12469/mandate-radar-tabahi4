@@ -31,6 +31,27 @@ REFERENCE_MERCHANTS = [
         "cancellation_pitfall": "Cancelling or deleting the YouTube app on your phone does NOT stop the debit! Google processes this via Play Store Subscriptions or Google Payments."
     },
     {
+        "id": "youtube_music",
+        "name": "YouTube Music",
+        "category": "Entertainment & Streaming",
+        "parent": "Alphabet Inc.",
+        "parent_id": "alphabet",
+        "official_website": "https://music.youtube.com",
+        "logo": "https://cdn.simpleicons.org/youtubemusic/FF0000",
+        "default_amount": 119.0,
+        "supported_cadences": ["MONTHLY", "ANNUAL"],
+        "descriptors": [
+            r"GOOGLE\*YOUTUBE\s*MUSIC",
+            r"YOUTUBE\s*MUSIC\s*PREMIUM",
+            r"UPI/CR/\d+/GOOGLE/YTMUSIC",
+            r"POS\s+DEBIT\s+GOOGLE\*YTMUSIC"
+        ],
+        "default_mechanism": "PLAY_STORE",
+        "support_email": "support@google.com",
+        "grievance_email": "grievance-officer-india@google.com",
+        "cancellation_pitfall": "Canceling YouTube Music standalone will not cancel YouTube Premium if subscribed separately."
+    },
+    {
         "id": "google_one",
         "name": "Google One (Cloud Storage)",
         "category": "Cloud & Productivity",
@@ -117,6 +138,67 @@ REFERENCE_MERCHANTS = [
         "support_email": "cis@amazon.com",
         "grievance_email": "grievance-officer@amazon.in",
         "cancellation_pitfall": "Amazon Prime hides the cancellation button behind 3 confirmation screens ('Keep My Benefits'). Complete all 3 screens until confirmation number is displayed."
+    },
+    {
+        "id": "prime_video",
+        "name": "Prime Video",
+        "category": "Entertainment & Streaming",
+        "parent": "Amazon.com Inc.",
+        "parent_id": "amazon",
+        "official_website": "https://www.primevideo.com",
+        "logo": "https://cdn.simpleicons.org/primevideo/00A8E1",
+        "default_amount": 179.0,
+        "supported_cadences": ["MONTHLY"],
+        "descriptors": [
+            r"PRIME\s+VIDEO\s+IN",
+            r"AMZN\*PRIME\s*VIDEO",
+            r"UPI/CR/\d+/AMAZON/PRIMEVIDEO"
+        ],
+        "default_mechanism": "UPI_AUTOPAY",
+        "support_email": "cis@amazon.com",
+        "grievance_email": "grievance-officer@amazon.in",
+        "cancellation_pitfall": "Prime Video is included in Amazon Prime membership."
+    },
+    {
+        "id": "microsoft_365",
+        "name": "Microsoft 365",
+        "category": "Cloud & Productivity",
+        "parent": "Microsoft Corporation",
+        "parent_id": "microsoft",
+        "official_website": "https://www.microsoft.com/microsoft-365",
+        "logo": "https://cdn.simpleicons.org/microsoft365/D83B01",
+        "default_amount": 489.0,
+        "supported_cadences": ["MONTHLY", "ANNUAL"],
+        "descriptors": [
+            r"MSFT\s*\*MICROSOFT\s*365",
+            r"MICROSOFT\*365",
+            r"MSFT\s+OFFICE\s*365",
+            r"UPI/CR/\d+/MSFT/365"
+        ],
+        "default_mechanism": "CARD_SI",
+        "support_email": "support@microsoft.com",
+        "grievance_email": "grievance@microsoft.com",
+        "cancellation_pitfall": "Microsoft 365 already bundles 1 TB OneDrive cloud storage."
+    },
+    {
+        "id": "onedrive",
+        "name": "OneDrive Storage",
+        "category": "Cloud & Productivity",
+        "parent": "Microsoft Corporation",
+        "parent_id": "microsoft",
+        "official_website": "https://onedrive.live.com",
+        "logo": "https://cdn.simpleicons.org/microsoftonedrive/0078D4",
+        "default_amount": 149.0,
+        "supported_cadences": ["MONTHLY"],
+        "descriptors": [
+            r"MSFT\s*\*ONEDRIVE",
+            r"MICROSOFT\*ONEDRIVE",
+            r"UPI/CR/\d+/MSFT/ONEDRIVE"
+        ],
+        "default_mechanism": "CARD_SI",
+        "support_email": "support@microsoft.com",
+        "grievance_email": "grievance@microsoft.com",
+        "cancellation_pitfall": "Standalone OneDrive is redundant if you have Microsoft 365."
     },
     {
         "id": "audible_india",

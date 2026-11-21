@@ -30,6 +30,7 @@ import {
 import { RadarView } from './components/RadarView'
 import { MandateDrawer } from './components/MandateDrawer'
 import { GraphCanvas, type GraphNode, type GraphEdge } from './components/GraphCanvas'
+import { ConnectionsView } from './components/ConnectionsView'
 
 export interface Mandate {
   id: string
@@ -54,6 +55,11 @@ export interface Mandate {
   confidence_score: number
   savings_if_cancelled: number
   pitfall: string
+  status?: string
+  cancel_confirmed_at?: string
+  expected_next_charge_date?: string
+  last_seen_charge_date?: string
+  reminder_count?: number
   support_email?: string
   grievance_email?: string
   official_website?: string
@@ -86,7 +92,7 @@ const getBrandVisual = (name: string) => {
 }
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'radar' | 'graph' | 'benchmark' | 'upload'>('radar')
+  const [activeTab, setActiveTab] = useState<'radar' | 'graph' | 'benchmark' | 'upload' | 'integrations'>('radar')
   const [viewMode, setViewMode] = useState<'grid' | 'table'>('grid')
   const [mandates, setMandates] = useState<Mandate[]>([])
   const [heroMetrics, setHeroMetrics] = useState<HeroMetrics>({
@@ -100,6 +106,8 @@ export default function App() {
   const [selectedMandate, setSelectedMandate] = useState<Mandate | null>(null)
   const [loading, setLoading] = useState(true)
   const [activeFilter, setActiveFilter] = useState<'ALL' | 'PRICE_HIKE' | 'TRIAL_CONVERTED' | 'UNUSED_ZOMBIE' | 'HEALTHY'>('ALL')
+  const [overlaps, setOverlaps] = useState<any[]>([])
+  const [reconciliation, setReconciliation] = useState<any>(null)
 
   // Notification stream
   const [notifications, setNotifications] = useState<any[]>([])
@@ -157,6 +165,8 @@ export default function App() {
       })
       const data = await res.json()
       setMandates(data.mandates || [])
+      setOverlaps(data.bundle_overlaps || [])
+      setReconciliation(data.reconciliation || null)
       setHeroMetrics(data.hero_metrics || {
         annual_committed_total: 0,
         monthly_equivalent: 0,
@@ -325,6 +335,8 @@ export default function App() {
       }
 
       setMandates(data.mandates || [])
+      setOverlaps(data.bundle_overlaps || [])
+      setReconciliation(data.reconciliation || null)
       setHeroMetrics(data.hero_metrics || heroMetrics)
       setCancelledIds(new Set())
       setUploadSuccess(`Successfully ingested ${data.rows_parsed} statement rows from ${data.filename}`)
@@ -334,6 +346,42 @@ export default function App() {
       setUploadError(err.message || 'Error parsing statement file.')
     } finally {
       setUploadLoading(false)
+    }
+  }
+
+  const handleConfirmOverlaps = async (keptIds: string[], cancelIds: string[]) => {
+    try {
+      await fetch('/api/overlaps/decision', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ kept_mandate_ids: keptIds, cancel_mandate_ids: cancelIds })
+      })
+      setMandates(prev => prev.map(m => {
+        if (keptIds.includes(m.id)) return { ...m, status: 'keep_confirmed' }
+        if (cancelIds.includes(m.id)) return { ...m, status: 'suggested_cancel' }
+        return m
+      }))
+      setOverlaps([])
+    } catch (err) {
+      console.error('Failed to record overlap decision:', err)
+    }
+  }
+
+  const handleConfirmCancellation = async (mandateId: string) => {
+    try {
+      await fetch(`/api/mandates/${mandateId}/cancel-confirm`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_id: 'user_primary' })
+      })
+      setMandates(prev => prev.map(m => {
+        if (m.id === mandateId) {
+          return { ...m, status: 'cancel_confirmed_by_user', cancel_confirmed_at: new Date().toISOString() }
+        }
+        return m
+      }))
+    } catch (err) {
+      console.error('Failed to confirm cancellation:', err)
     }
   }
 
@@ -395,6 +443,17 @@ export default function App() {
             >
               <Upload className="w-3.5 h-3.5" />
               Ingest Statement
+            </button>
+            <button
+              onClick={() => setActiveTab('integrations')}
+              className={`px-3.5 py-1.5 rounded-lg font-semibold transition flex items-center gap-1.5 ${
+                activeTab === 'integrations'
+                  ? 'bg-gradient-to-r from-cyan-600 to-indigo-600 text-white shadow-md'
+                  : 'text-neutral-400 hover:text-white'
+              }`}
+            >
+              <Zap className="w-3.5 h-3.5 text-cyan-400" />
+              Connected Feeds
             </button>
           </nav>
 
@@ -476,10 +535,14 @@ export default function App() {
             total={heroMetrics.annual_committed_total}
             cancelled={cancelledIds}
             loading={loading}
+            overlaps={overlaps}
+            reconciliation={reconciliation}
             onToggle={toggleCancel}
             onCancelFlagged={cancelAllFlagged}
             onClear={() => setCancelledIds(new Set())}
             onOpen={m => { setSelectedMandate(m); generateEmail(m, 'formal') }}
+            onConfirmOverlaps={handleConfirmOverlaps}
+            onConfirmCancellation={handleConfirmCancellation}
           />
         )}
 
@@ -849,6 +912,10 @@ export default function App() {
               </div>
             </form>
           </div>
+        )}
+
+        {activeTab === 'integrations' && (
+          <ConnectionsView onDataIngested={fetchInitialData} />
         )}
       </main>
 

@@ -5,3 +5,5 @@ pydantic>=2.6.0
 neo4j>=5.18.0
 python-multipart>=0.0.9
 mangum>=0.17.0
+sqlalchemy>=2.0.0
+pypdf>=5.0.0

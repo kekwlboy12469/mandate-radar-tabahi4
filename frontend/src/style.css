@@ -86,7 +86,7 @@
 .mr .ds{font-size:12.5px;color:var(--mute);font-family:'JetBrains Mono',ui-monospace,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .mr .mech{font-size:13px;color:var(--mute)}
 .mr .tag{display:inline-block;font-size:12.5px;font-weight:600;padding:3px 10px;border-radius:999px;border:1px solid currentColor}
-.mr .t-price{color:var(--price)}.mr .t-trial{color:var(--trial)}.mr .t-zombie{color:var(--zombie)}.mr .t-unk{color:var(--unk)}.mr .t-ok{color:var(--ok)}
+.mr .t-price{color:var(--price)}.mr .t-trial{color:var(--trial)}.mr .t-zombie{color:var(--zombie)}.mr .t-overlap{color:var(--price)}.mr .t-unk{color:var(--mute)}.mr .t-ok{color:var(--ok)}.mr .t-cancelled{color:var(--mute);opacity:.85}.mr .t-charging{color:#EF4444;border-color:#EF4444}.mr .t-verified{color:#10B981;border-color:#10B981}
 .mr .amt{text-align:right;font:600 16px 'Bricolage Grotesque',sans-serif;font-variant-numeric:tabular-nums}
 .mr .amt span{display:block;font:400 12px Figtree,sans-serif;color:var(--mute)}
 .mr .empty{padding:28px;text-align:center;color:var(--mute)}

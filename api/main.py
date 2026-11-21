@@ -1,16 +1,17 @@
 """
-Mandate Radar FastAPI Backend - Vercel-optimised version.
-Key change vs. original: all heavy startup work (synthetic data generation,
-analysis, Neo4j seeding) is deferred to the first actual request so the
-function cold-starts quickly within Vercel's timeout budget.
+Mandate Radar FastAPI Backend Server
+Track: Neo4j (Best Use of Neo4j) - Fintech Track Solution
 """
 
 from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
 import io
 import os
+import csv
 import pandas as pd
 
 from reference_data import REFERENCE_MERCHANTS, PARENT_COMPANIES, PAYMENT_MECHANISMS, ESCALATION_CHAIN
@@ -30,6 +31,7 @@ app = FastAPI(
     version="2.0.0"
 )
 
+# Enable CORS for Vite frontend
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -38,34 +40,32 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ---------------------------------------------------------------------------
-# LAZY INITIALISATION — nothing heavy runs at import time
-# ---------------------------------------------------------------------------
-_store: Dict[str, Any] = {}
+# Initialize Relational Database & Mount API v1
+db_initialized = False
+try:
+    from app.core.db import init_db, SessionLocal
+    from app.services.seed_service import seed_database
+    from app.api.v1 import api_v1_router
+    init_db()
+    with SessionLocal() as db_session:
+        seed_database(db_session)
+    app.include_router(api_v1_router)
+    db_initialized = True
+except Exception as e:
+    print(f"Warning: Database initialization deferred: {e}")
 
-def _get_store() -> Dict[str, Any]:
-    """Initialise the in-memory store on the very first call."""
-    if _store:
-        return _store
+# Initialize Neo4j Service
+neo4j_graph = Neo4jKnowledgeGraph()
 
-    _store["neo4j_graph"] = Neo4jKnowledgeGraph()
-    _store["statement"] = generate_synthetic_statement()
-    _store["usage"] = generate_usage_telemetry()
-    _store["notifications"] = generate_notification_stream()
+# In-memory session store
+cached_statement = generate_synthetic_statement()
+cached_usage = generate_usage_telemetry()
+cached_notifications = generate_notification_stream()
 
-    # Pre-seed graph (best-effort — don't crash if it fails)
-    try:
-        initial = analyze_statement(_store["statement"], _store["usage"])
-        _store["neo4j_graph"].sync_statement_mandates("Arun Sharma", initial["mandates"])
-    except Exception:
-        pass
+# Pre-seed user's active portfolio in graph so Portfolio mode is immediately populated
+_initial_analysis = analyze_statement(cached_statement, cached_usage)
+neo4j_graph.sync_statement_mandates("Arun Sharma", _initial_analysis["mandates"])
 
-    return _store
-
-
-# ---------------------------------------------------------------------------
-# Request models
-# ---------------------------------------------------------------------------
 class AnalyzeRequest(BaseModel):
     transactions: Optional[List[Dict[str, Any]]] = None
     usage_feed: Optional[Dict[str, str]] = None
@@ -80,7 +80,7 @@ class EmailDraftRequest(BaseModel):
     mechanism: str
     user_name: str = "Arun Sharma"
     account_ref: str = "XX-4821 / UPI VPA"
-    tone: str = "formal"
+    tone: str = "formal" # "polite", "formal", "firm_dispute"
     cancellation_reason: Optional[str] = "Subscription no longer required"
 
 class CypherQueryRequest(BaseModel):
@@ -91,14 +91,27 @@ class Neo4jConnectRequest(BaseModel):
     user: str = "neo4j"
     password: str
 
+@app.get("/api/info")
+def get_api_info():
+    return {
+        "service": "Mandate Radar API",
+        "version": "2.0.0",
+        "theme": "Fintech - The Auto Debits Nobody Can Find",
+        "track": "Neo4j (Best Use of Neo4j)",
+        "database_status": "ACTIVE_PERSISTENT_STORE" if db_initialized else "DEFERRED",
+        "neo4j_status": "CONNECTED" if neo4j_graph.is_connected else "EMBEDDED_GRAPH_MODE",
+        "reference_merchants_count": len(REFERENCE_MERCHANTS)
+    }
 
-# ---------------------------------------------------------------------------
-# Endpoints
-# ---------------------------------------------------------------------------
+@app.get("/")
+def root():
+    index_path = os.path.join(frontend_dist, "index.html")
+    if os.path.exists(index_path):
+        return FileResponse(index_path)
+    return get_api_info()
+
 @app.get("/api/health")
 def health_check():
-    store = _get_store()
-    neo4j_graph = store["neo4j_graph"]
     return {
         "status": "healthy",
         "neo4j_connected": neo4j_graph.is_connected,
@@ -108,46 +121,37 @@ def health_check():
         "payment_mechanisms_modeled": len(PAYMENT_MECHANISMS)
     }
 
-@app.get("/api/info")
-def get_api_info():
-    store = _get_store()
-    neo4j_graph = store["neo4j_graph"]
-    return {
-        "service": "Mandate Radar API",
-        "theme": "Fintech - The Auto Debits Nobody Can Find",
-        "track": "Neo4j (Best Use of Neo4j)",
-        "neo4j_status": "CONNECTED" if neo4j_graph.is_connected else "EMBEDDED_GRAPH_MODE",
-        "reference_merchants_count": len(REFERENCE_MERCHANTS)
-    }
-
 @app.get("/api/statement/synthetic")
 def get_synthetic_dataset():
-    store = _get_store()
+    """Returns the synthetic 12-month statement, usage telemetry, and notifications."""
     return {
-        "transactions": store["statement"],
-        "usage_feed": store["usage"],
-        "notifications": store["notifications"],
+        "transactions": cached_statement,
+        "usage_feed": cached_usage,
+        "notifications": cached_notifications,
         "ground_truth_mandates": GROUND_TRUTH_MANDATES,
         "ground_truth_hard_negatives": GROUND_TRUTH_HARD_NEGATIVES
     }
 
 @app.post("/api/analyze")
 def run_analysis(payload: AnalyzeRequest):
-    store = _get_store()
-    neo4j_graph = store["neo4j_graph"]
-    cached_statement = store["statement"]
-    cached_usage = store["usage"]
-    cached_notifications = store["notifications"]
-
+    """
+    Main detection endpoint: Processes statement transactions with deterministic rules,
+    resolves descriptors using Neo4j knowledge graph, and syncs graph nodes.
+    """
     txs = payload.transactions if payload.transactions is not None else cached_statement
     usage = payload.usage_feed if payload.usage_feed is not None else cached_usage
     user_name = payload.user_name or "Arun Sharma"
 
+    # Run deterministic detector
     analysis_result = analyze_statement(txs, usage)
+
+    # Sync detected mandates into Neo4j graph
     neo4j_graph.sync_statement_mandates(user_name, analysis_result["mandates"])
 
+    # Attach notification context to mandates
     enhanced_mandates = []
     for m in analysis_result["mandates"]:
+        # Find any matching pre-debit notifications
         matched_notifs = [
             n for n in cached_notifications
             if m["merchant_name"].lower() in n["text"].lower() or m["descriptor"].lower() in n["text"].lower()
@@ -157,6 +161,8 @@ def run_analysis(payload: AnalyzeRequest):
         enhanced_mandates.append(m)
 
     analysis_result["mandates"] = enhanced_mandates
+
+    # Compute hero metrics
     annual_committed = analysis_result["annual_committed_total"]
     analysis_result["hero_metrics"] = {
         "annual_committed_total": annual_committed,
@@ -165,30 +171,34 @@ def run_analysis(payload: AnalyzeRequest):
         "total_mandates_found": len(enhanced_mandates),
         "flagged_issues_count": sum(1 for m in enhanced_mandates if m["flag"] != "HEALTHY")
     }
+
     return analysis_result
 
 @app.post("/api/upload-csv")
 async def upload_statement_csv(file: UploadFile = File(...)):
-    store = _get_store()
-    neo4j_graph = store["neo4j_graph"]
-    cached_usage = store["usage"]
-
+    """
+    Parses an uploaded bank statement CSV file with dynamic column mapping,
+    validates headers, handles empty or malformed files, and runs detection.
+    """
     try:
         content = await file.read()
         if not content:
             raise HTTPException(status_code=400, detail="Uploaded file is empty.")
 
+        # Decode content with fallback
         try:
             text = content.decode("utf-8")
         except UnicodeDecodeError:
             text = content.decode("latin-1")
 
+        # Read with pandas
         csv_io = io.StringIO(text)
         df = pd.read_csv(csv_io)
 
         if df.empty:
             raise HTTPException(status_code=400, detail="The CSV file has headers but contains zero rows.")
 
+        # Identify columns
         cols = {c.strip().lower(): c for c in df.columns}
         date_col = next((cols[k] for k in [
             "date", "transactiontimestamp", "valuedate", "txn_date", 
@@ -209,7 +219,7 @@ async def upload_statement_csv(file: UploadFile = File(...)):
         if not date_col or not desc_col or not amt_col:
             raise HTTPException(
                 status_code=422,
-                detail=f"CSV must contain Date, Description, and Debit/Amount columns. Found: {list(df.columns)}"
+                detail=f"CSV must contain Date, Description, and Debit/Amount columns. Found columns: {list(df.columns)}"
             )
 
         transactions = []
@@ -219,8 +229,10 @@ async def upload_statement_csv(file: UploadFile = File(...)):
                 amt_val = abs(float(amt_raw))
             except ValueError:
                 continue
+
             if amt_val <= 0:
                 continue
+
             transactions.append({
                 "id": f"CSV_ROW_{idx+1}",
                 "date": str(row[date_col]).strip()[:10],
@@ -233,6 +245,7 @@ async def upload_statement_csv(file: UploadFile = File(...)):
         if not transactions:
             raise HTTPException(status_code=400, detail="No valid debit transactions could be parsed from the CSV.")
 
+        # Run detection
         analysis_result = analyze_statement(transactions, cached_usage)
         neo4j_graph.sync_statement_mandates("Uploaded Statement User", analysis_result["mandates"])
 
@@ -246,6 +259,7 @@ async def upload_statement_csv(file: UploadFile = File(...)):
         }
         analysis_result["filename"] = file.filename
         analysis_result["rows_parsed"] = len(transactions)
+
         return analysis_result
 
     except HTTPException:
@@ -255,6 +269,10 @@ async def upload_statement_csv(file: UploadFile = File(...)):
 
 @app.post("/api/generate-email")
 def generate_cancellation_email(req: EmailDraftRequest):
+    """
+    Generates legally robust, mechanism-specific cancellation notice
+    and dispute letters tailored to Indian banking & consumer regulations.
+    """
     mech_info = PAYMENT_MECHANISMS.get(req.mechanism, PAYMENT_MECHANISMS["DIRECT_MERCHANT"])
 
     if req.tone == "polite":
@@ -270,7 +288,9 @@ Account Details:
 - Payment Rail: {mech_info['name']} ({req.account_ref})
 - Cancellation Reason: {req.cancellation_reason}
 
-Kindly process this cancellation with immediate effect and send a written confirmation.
+Kindly process this cancellation with immediate effect, terminate any scheduled future auto-debits, and send a written confirmation of cancellation to this email address.
+
+Thank you for your assistance.
 
 Warm regards,
 {req.user_name}
@@ -285,7 +305,7 @@ SUBJECT: FORMAL NOTICE OF REVOCATION OF CONSENT FOR RECURRING DEBIT MANDATE UNDE
 
 Dear Sir/Madam,
 
-I hereby serve formal notice that I have revoked all authorization for recurring auto-debit transactions in favour of '{req.merchant_name}'.
+I hereby serve formal notice that I have revoked all authorization and consent for any recurring auto-debit transactions in favour of '{req.merchant_name}'.
 
 Transaction & Mandate Profile:
 - Customer Name: {req.user_name}
@@ -294,14 +314,18 @@ Transaction & Mandate Profile:
 - Billed Cadence & Amount: ₹{req.amount:,.2f} ({req.cadence})
 - Account / Card Reference: {req.account_ref}
 
-Under RBI Master Circular on Recurring Debits and Consumer Protection Rules 2020, any subsequent debit after this notice shall be deemed unauthorized.
+LEGAL DIRECTIVE:
+Under Reserve Bank of India Master Circular on Recurring Debits (DPSS.CO.PD.No.S513/02.14.003/2021-22) and the Consumer Protection (E-Commerce) Rules 2020:
+1. The customer maintains an absolute statutory right to revoke standing instructions and mandates at any time without punitive fee or obstruction.
+2. Any subsequent debit attempted after receipt of this notice shall be deemed unauthorized under Section 403/420 of the IPC and reported to the RBI Banking Ombudsman (CMS) and National Consumer Helpline (NCH Docket 1915).
+3. If an unauthorized debit occurs, this notice shall serve as primary evidence in support of a mandatory chargeback reversal claim filed with the issuing bank.
 
-Please confirm cancellation within 48 hours.
+Please confirm cancellation of this recurring mandate within 48 hours.
 
 Yours sincerely,
 {req.user_name}
 """
-    else:
+    else: # Default: formal
         subject = f"Notice of Mandate Cancellation: {req.merchant_name} [Ref: {req.account_ref}]"
         body = f"""To:
 Customer Care & Accounts Dept,
@@ -311,7 +335,7 @@ Subject: Request to Cancel Recurring Mandate / Standing Instruction
 
 Dear Accounts Team,
 
-Please treat this as my formal instruction to cancel my recurring subscription and revoke the auto-debit mandate.
+Please treat this email as my formal instruction to cancel my recurring subscription and revoke the auto-debit mandate associated with my account.
 
 Details of Mandate:
 - Account Holder Name: {req.user_name}
@@ -321,7 +345,9 @@ Details of Mandate:
 - Payment Rail: {mech_info['name']}
 - Card / Account Reference: {req.account_ref}
 
-Please discontinue all future auto-debits with immediate effect and confirm cancellation.
+In accordance with RBI guidelines governing recurring e-mandates, please discontinue all future auto-debits with immediate effect from the close of the current billing cycle.
+
+Please acknowledge receipt of this cancellation instruction and email me a cancellation confirmation reference number.
 
 Sincerely,
 {req.user_name}
@@ -338,20 +364,20 @@ Sincerely,
 
 @app.get("/api/graph")
 def get_graph_data(mode: str = "portfolio"):
-    store = _get_store()
-    return store["neo4j_graph"].get_graph_visualization_data(filter_mode=mode)
+    """Returns nodes and edges for the Neo4j Graph Visualizer."""
+    return neo4j_graph.get_graph_visualization_data(filter_mode=mode)
 
 @app.post("/api/graph/cypher")
 def execute_cypher_query(req: CypherQueryRequest):
+    """Executes a Cypher query on Neo4j (live Aura or embedded engine)."""
     if not req.query.strip():
         raise HTTPException(status_code=400, detail="Cypher query cannot be empty.")
-    store = _get_store()
-    return store["neo4j_graph"].run_cypher_query(req.query)
+    return neo4j_graph.run_cypher_query(req.query)
 
 @app.get("/api/graph/seed")
 def download_cypher_seed():
-    store = _get_store()
-    script = store["neo4j_graph"].generate_cypher_seed_script()
+    """Generates and returns the complete Cypher seed script (.cql)."""
+    script = neo4j_graph.generate_cypher_seed_script()
     return {
         "filename": "mandate_radar_neo4j_seed.cql",
         "script": script,
@@ -361,38 +387,53 @@ def download_cypher_seed():
 
 @app.post("/api/neo4j/connect")
 def connect_neo4j(req: Neo4jConnectRequest):
-    store = _get_store()
-    success, message = store["neo4j_graph"].connect(req.uri, req.user, req.password)
+    """Connects to live Neo4j Aura or local instance."""
+    success, message = neo4j_graph.connect(req.uri, req.user, req.password)
     return {
         "success": success,
         "message": message,
-        "is_connected": store["neo4j_graph"].is_connected,
+        "is_connected": neo4j_graph.is_connected,
         "uri": req.uri
     }
 
 @app.get("/api/benchmark")
 def run_benchmark():
-    store = _get_store()
-    analysis = analyze_statement(store["statement"], store["usage"])
+    """
+    Evaluates detector against ground truth planted events.
+    Reports Precision, Recall, and False Alarms on Hard Negatives.
+    """
+    analysis = analyze_statement(cached_statement, cached_usage)
     found_mandates = analysis["mandates"]
+    rejected = analysis["rejected_transactions"]
 
+    # Ground truth comparisons
     planted_count = len(GROUND_TRUTH_MANDATES)
-    found_count   = len(found_mandates)
+    found_count = len(found_mandates)
 
-    planted_hikes   = sum(1 for g in GROUND_TRUTH_MANDATES if g.get("planted_issue") == "PRICE_HIKE")
-    detected_hikes  = sum(1 for m in found_mandates if m["flag"] == "PRICE_HIKE")
-    planted_trials  = sum(1 for g in GROUND_TRUTH_MANDATES if g.get("planted_issue") == "TRIAL_CONVERSION")
+    # Price hikes
+    planted_hikes = sum(1 for g in GROUND_TRUTH_MANDATES if g.get("planted_issue") == "PRICE_HIKE")
+    detected_hikes = sum(1 for m in found_mandates if m["flag"] == "PRICE_HIKE")
+
+    # Trial conversions
+    planted_trials = sum(1 for g in GROUND_TRUTH_MANDATES if g.get("planted_issue") == "TRIAL_CONVERSION")
     detected_trials = sum(1 for m in found_mandates if m["flag"] == "TRIAL_CONVERTED")
-    planted_zombies  = sum(1 for g in GROUND_TRUTH_MANDATES if g.get("planted_issue") == "UNUSED_ZOMBIE")
+
+    # Zombie / unused charges
+    planted_zombies = sum(1 for g in GROUND_TRUTH_MANDATES if g.get("planted_issue") == "UNUSED_ZOMBIE")
     detected_zombies = sum(1 for m in found_mandates if m["flag"] == "UNUSED_ZOMBIE")
 
-    false_positives = [
-        {"descriptor": m["descriptor"], "incorrectly_flagged_as": m["flag"]}
-        for m in found_mandates
-        for hn in GROUND_TRUTH_HARD_NEGATIVES
-        if hn["descriptor"].lower() in m["descriptor"].lower()
-    ]
-    all_clean = len(false_positives) == 0
+    # Hard negatives filtering check
+    # Check that groceries, variable electricity, and food orders are NEVER flagged as mandates
+    false_positives = []
+    for m in found_mandates:
+        for hn in GROUND_TRUTH_HARD_NEGATIVES:
+            if hn["descriptor"].lower() in m["descriptor"].lower():
+                false_positives.append({
+                    "descriptor": m["descriptor"],
+                    "incorrectly_flagged_as": m["flag"]
+                })
+
+    all_hard_negatives_rejected = len(false_positives) == 0
 
     return {
         "status": "PASS",
@@ -406,10 +447,26 @@ def run_benchmark():
             "hard_negatives_eliminated": {
                 "total_planted_hard_negatives": len(GROUND_TRUTH_HARD_NEGATIVES),
                 "false_positives_count": len(false_positives),
-                "false_positive_rate": 0.0 if all_clean else round(len(false_positives) / len(GROUND_TRUTH_HARD_NEGATIVES), 2),
-                "all_hard_negatives_rejected": all_clean
+                "false_positive_rate": 0.0 if all_hard_negatives_rejected else round(len(false_positives) / len(GROUND_TRUTH_HARD_NEGATIVES), 2),
+                "all_hard_negatives_rejected": all_hard_negatives_rejected
             }
         },
         "planted_events_detail": GROUND_TRUTH_MANDATES,
         "hard_negatives_evaluated": GROUND_TRUTH_HARD_NEGATIVES
     }
+
+# Mount Frontend Static Assets
+frontend_dist = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "frontend", "dist"))
+if os.path.exists(frontend_dist):
+    app.mount("/assets", StaticFiles(directory=os.path.join(frontend_dist, "assets")), name="assets")
+
+    @app.get("/{full_path:path}")
+    def serve_frontend(full_path: str):
+        file_path = os.path.join(frontend_dist, full_path)
+        if os.path.exists(file_path) and os.path.isfile(file_path):
+            return FileResponse(file_path)
+        return FileResponse(os.path.join(frontend_dist, "index.html"))
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
