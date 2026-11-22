@@ -39,8 +39,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   const [toastMsg, setToastMsg] = useState<string | null>(null)
 
   // Google email fallback state
-  const [googleEmail, setGoogleEmail] = useState('')
-  const [googleName, setGoogleName] = useState('')
 
   // Phone OTP state
   const [phoneNumber, setPhoneNumber] = useState('')
@@ -148,62 +146,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     } catch (err: any) {
       setIsLoading(false)
       setErrorMessage(err.message || 'Failed to authenticate Google account.')
-    }
-  }
-
-  // --- Google Fallback Form Handler ---
-  const handleGoogleFallbackSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
-    const cleanEmail = googleEmail.trim().toLowerCase()
-    if (!cleanEmail || !cleanEmail.includes('@')) {
-      setErrorMessage('Please enter a valid Google email address.')
-      return
-    }
-
-    setIsLoading(true)
-    setErrorMessage('')
-
-    const cleanName = googleName.trim() || cleanEmail.split('@')[0].replace('.', ' ').replace(/\b\w/g, l => l.toUpperCase())
-
-    try {
-      const { ok, data, error } = await safeFetchJson<any>('/api/v1/auth/google', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          credential: 'valid_google_token',
-          email: cleanEmail,
-          full_name: cleanName
-        })
-      })
-
-      if (!ok || !data) {
-        throw new Error(error || data?.detail || 'Google authentication failed.')
-      }
-
-      if (data.access_token) {
-        localStorage.setItem('mandate_radar_token', data.access_token)
-      }
-
-      const userObj = {
-        id: data.user_id,
-        name: data.full_name,
-        email: data.email,
-        phone: '',
-        accountLabel: `${data.full_name.split(' ')[0]}'s Mandate Radar`,
-        isDemo: false
-      }
-      try {
-        localStorage.setItem('mandate_radar_user', JSON.stringify(userObj))
-      } catch {}
-
-      setIsLoading(false)
-      setToastMsg(`Signed in as ${userObj.name}! Launching dashboard...`)
-      setTimeout(() => {
-        onSuccess(userObj)
-      }, 300)
-    } catch (err: any) {
-      setIsLoading(false)
-      setErrorMessage(err.message || 'Failed to authenticate Google identity.')
     }
   }
 
@@ -503,66 +445,21 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             </div>
 
             <div className="flex justify-center py-4 bg-[#0E1F17] rounded-2xl border border-white/10">
-              <GoogleLogin
-                onSuccess={handleGoogleSuccess}
-                onError={() => {
-                  setErrorMessage('Google Sign-In was cancelled or failed.')
-                }}
-                theme="filled_black"
-                shape="pill"
-                size="large"
-                text="continue_with"
-              />
+              {import.meta.env.VITE_GOOGLE_CLIENT_ID ? (
+                <GoogleLogin
+                  onSuccess={handleGoogleSuccess}
+                  onError={() => setErrorMessage('Google Sign-In was cancelled or failed.')}
+                  theme="filled_black"
+                  shape="pill"
+                  size="large"
+                  text="continue_with"
+                />
+              ) : (
+                <p className="px-4 text-center text-xs text-[#9BAEA2]">
+                  Google sign-in is not configured. Use email and password instead.
+                </p>
+              )}
             </div>
-
-            {/* Direct Google Account Fallback */}
-            <form onSubmit={handleGoogleFallbackSubmit} className="space-y-3 pt-2 border-t border-white/10">
-              <div className="text-[11px] text-[#9BAEA2] text-center font-mono">
-                OR SIGN IN WITH GOOGLE EMAIL
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-[#EEDBCA] mb-1">
-                  Google Email Address
-                </label>
-                <input
-                  type="email"
-                  required
-                  value={googleEmail}
-                  onChange={e => setGoogleEmail(e.target.value)}
-                  placeholder="your.name@gmail.com"
-                  className="w-full px-3.5 py-2.5 text-xs bg-[#0E1F17] border border-white/15 text-white rounded-xl focus:border-[#2DE2B5] focus:outline-none"
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-[#EEDBCA] mb-1">
-                  Full Name
-                </label>
-                <input
-                  type="text"
-                  value={googleName}
-                  onChange={e => setGoogleName(e.target.value)}
-                  placeholder="Your Name"
-                  className="w-full px-3.5 py-2.5 text-xs bg-[#0E1F17] border border-white/15 text-white rounded-xl focus:border-[#2DE2B5] focus:outline-none"
-                />
-              </div>
-              <button
-                type="submit"
-                disabled={isLoading}
-                className="w-full h-10 bg-[#2DE2B5] text-[#07110C] font-bold text-xs rounded-xl hover:brightness-105 transition-all flex items-center justify-center gap-2 cursor-pointer"
-              >
-                {isLoading ? (
-                  <>
-                    <Loader2 className="w-3.5 h-3.5 animate-spin text-[#07110C]" />
-                    <span>Verifying Google Account...</span>
-                  </>
-                ) : (
-                  <>
-                    <span>Sign In with Google Account</span>
-                    <ArrowRight className="w-3.5 h-3.5" />
-                  </>
-                )}
-              </button>
-            </form>
 
             <button
               type="button"
@@ -656,7 +553,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 {otp.map((digit, idx) => (
                   <input
                     key={idx}
-                    ref={el => (otpRefs.current[idx] = el)}
+                    ref={el => { otpRefs.current[idx] = el }}
                     type="text"
                     inputMode="numeric"
                     maxLength={1}

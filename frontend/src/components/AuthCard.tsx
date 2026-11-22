@@ -12,6 +12,7 @@ import {
   Loader2,
   AlertCircle
 } from 'lucide-react'
+import { GoogleLogin } from '@react-oauth/google'
 import { safeFetchJson } from '../lib/api'
 
 export type AuthState = 'default' | 'focused' | 'loading' | 'error' | 'phone_entry' | 'otp' | 'signup' | 'google'
@@ -57,12 +58,7 @@ export const AuthCard: React.FC<AuthCardProps> = ({
   const [phoneFullName, setPhoneFullName] = useState('')
   const [otp, setOtp] = useState(['', '', '', '', '', ''])
   const [otpTimer, setOtpTimer] = useState(60)
-  const [generatedOtp, setGeneratedOtp] = useState('')
   const otpRefs = useRef<(HTMLInputElement | null)[]>([])
-
-  // Google OAuth state
-  const [googleEmail, setGoogleEmail] = useState('')
-  const [googleName, setGoogleName] = useState('')
 
   // Keep state synced if prop changes
   useEffect(() => {
@@ -119,13 +115,6 @@ export const AuthCard: React.FC<AuthCardProps> = ({
     }
   }
 
-  const fillDemoCredentials = () => {
-    setMode('signin')
-    setEmail('arun.sharma@example.com')
-    setPassword('MandateRadar2026!')
-    setErrorMessage('')
-  }
-
   const handleSendPhoneOtp = async (e: React.FormEvent) => {
     e.preventDefault()
     const clean = phoneNumber.replace(/\D/g, '')
@@ -136,7 +125,6 @@ export const AuthCard: React.FC<AuthCardProps> = ({
     setIsLoading(true)
     setErrorMessage('')
 
-    const isDemoAuth = import.meta.env.VITE_DEMO_AUTH === 'true'
     try {
       const { ok, data, error } = await safeFetchJson<any>('/api/v1/auth/otp/send', {
         method: 'POST',
@@ -146,18 +134,11 @@ export const AuthCard: React.FC<AuthCardProps> = ({
           full_name: phoneFullName.trim() || undefined
         })
       })
-      if (!ok && !isDemoAuth) {
+      if (!ok) {
         setIsLoading(false)
         setErrorMessage(error || 'Failed to dispatch verification code.')
         return
       }
-      const code = (ok && data?.otp) ? data.otp : (isDemoAuth ? `${Math.floor(100000 + Math.random() * 900000)}` : '')
-      if (!code) {
-        setIsLoading(false)
-        setErrorMessage(error || 'Unable to generate verification code.')
-        return
-      }
-      setGeneratedOtp(code)
       setOtp(['', '', '', '', '', ''])
       setOtpTimer(60)
       setMode('otp')
@@ -178,9 +159,7 @@ export const AuthCard: React.FC<AuthCardProps> = ({
     setIsLoading(true)
     setErrorMessage('')
 
-    const cleanPhone = phoneNumber.replace(/\D/g, '').slice(-10) || '9820148210'
-    const displayName = phoneFullName.trim() || `User +91 ${cleanPhone.slice(-4)}`
-    const isDemoAuth = import.meta.env.VITE_DEMO_AUTH === 'true'
+    const cleanPhone = phoneNumber.replace(/\D/g, '').slice(-10)
 
     try {
       const { ok, data, error } = await safeFetchJson<any>('/api/v1/auth/otp/verify', {
@@ -193,20 +172,18 @@ export const AuthCard: React.FC<AuthCardProps> = ({
         })
       })
 
-      if (!ok && (!isDemoAuth || (code !== generatedOtp && code !== '482910'))) {
+      if (!ok || !data?.access_token) {
         setIsLoading(false)
         setErrorMessage(error || 'Invalid verification code. Please check and retry.')
         return
       }
 
-      if (data?.access_token) {
-        localStorage.setItem('mandate_radar_token', data.access_token)
-      }
+      localStorage.setItem('mandate_radar_token', data.access_token)
 
       const userObj = {
-        id: data?.user_id || `usr_${cleanPhone}`,
-        name: data?.full_name || displayName,
-        email: data?.email || `${cleanPhone}@phone.mandateradar.in`,
+        id: data.user_id,
+        name: data.full_name,
+        email: data.email,
         phone: `+91 ${cleanPhone}`,
         isDemo: false
       }
@@ -222,48 +199,35 @@ export const AuthCard: React.FC<AuthCardProps> = ({
     }
   }
 
-  const handleGoogleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault()
-    const cleanEmail = googleEmail.trim().toLowerCase()
-    if (!cleanEmail || !cleanEmail.includes('@')) {
-      setErrorMessage('Please enter a valid Google email address.')
+  const handleGoogleSuccess = async (credentialResponse: { credential?: string }) => {
+    if (!credentialResponse.credential) {
+      setErrorMessage('Google Sign-In did not return a valid identity token.')
       return
     }
 
     setIsLoading(true)
     setErrorMessage('')
 
-    const cleanName = googleName.trim() || cleanEmail.split('@')[0].replace('.', ' ').replace(/\b\w/g, l => l.toUpperCase())
-    const isDemoAuth = import.meta.env.VITE_DEMO_AUTH === 'true'
-
     try {
       const { ok, data, error } = await safeFetchJson<any>('/api/v1/auth/google', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          email: cleanEmail,
-          full_name: cleanName
+          credential: credentialResponse.credential
         })
       })
 
-      if (!ok && !isDemoAuth) {
+      if (!ok || !data?.access_token) {
         setIsLoading(false)
-        setErrorMessage(error || 'Google authentication failed. Please verify server connection.')
+        setErrorMessage(error || 'Google authentication failed.')
         return
       }
-
-      const token = data?.access_token || (isDemoAuth ? `jwt_google_${Date.now()}` : '')
-      if (!token) {
-        setIsLoading(false)
-        setErrorMessage(error || 'Failed to authenticate Google identity.')
-        return
-      }
-      localStorage.setItem('mandate_radar_token', token)
+      localStorage.setItem('mandate_radar_token', data.access_token)
 
       const userObj = {
-        id: data?.user_id || `usr_google_${cleanEmail.replace(/[^a-zA-Z0-9]/g, '_')}`,
-        name: data?.full_name || cleanName,
-        email: data?.email || cleanEmail,
+        id: data.user_id,
+        name: data.full_name,
+        email: data.email,
         phone: '',
         isDemo: false
       }
@@ -290,8 +254,6 @@ export const AuthCard: React.FC<AuthCardProps> = ({
     setIsLoading(true)
     setErrorMessage('')
 
-    const isDemoAuth = import.meta.env.VITE_DEMO_AUTH === 'true'
-
     try {
       if (mode === 'signup') {
         const { ok, data, error } = await safeFetchJson<any>('/api/v1/auth/register', {
@@ -303,16 +265,15 @@ export const AuthCard: React.FC<AuthCardProps> = ({
             full_name: fullName.trim() || email.split('@')[0]
           })
         })
-        if (!ok && !isDemoAuth) {
+        if (!ok || !data?.access_token) {
           throw new Error(error || data?.detail || 'Registration failed. Please check inputs.')
         }
-        const token = data?.access_token || (isDemoAuth ? `jwt_usr_${Date.now()}` : '')
-        if (token) localStorage.setItem('mandate_radar_token', token)
+        localStorage.setItem('mandate_radar_token', data.access_token)
 
         const userObj = {
-          id: data?.user_id || `usr_${email.replace(/[^a-zA-Z0-9]/g, '_')}`,
-          name: data?.full_name || fullName.trim() || email.split('@')[0],
-          email: data?.email || email.trim(),
+          id: data.user_id,
+          name: data.full_name,
+          email: data.email,
           phone: '',
           isDemo: false
         }
@@ -324,8 +285,6 @@ export const AuthCard: React.FC<AuthCardProps> = ({
         onSuccess?.(userObj)
       } else if (mode === 'signin') {
         const cleanEmail = email.trim().toLowerCase()
-        const isDemoCreds = cleanEmail === 'arun.sharma@example.com'
-
         const { ok, data, error } = await safeFetchJson<any>('/api/v1/auth/login', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -335,20 +294,18 @@ export const AuthCard: React.FC<AuthCardProps> = ({
           })
         })
 
-        if (!ok && !isDemoCreds && !isDemoAuth) {
+        if (!ok || !data?.access_token) {
           throw new Error(error || data?.detail || 'Invalid email or password.')
         }
 
-        const isDemo = isDemoCreds || (data?.email === 'arun.sharma@example.com')
-        const token = data?.access_token || (isDemo ? 'demo_token_arun' : (isDemoAuth ? `jwt_usr_${Date.now()}` : ''))
-        if (token) localStorage.setItem('mandate_radar_token', token)
+        localStorage.setItem('mandate_radar_token', data.access_token)
 
         const userObj = {
-          id: data?.user_id || (isDemo ? 'usr_arun_sharma' : `usr_${cleanEmail.replace(/[^a-zA-Z0-9]/g, '_')}`),
-          name: data?.full_name || (isDemo ? 'Arun Sharma' : cleanEmail.split('@')[0]),
-          email: data?.email || cleanEmail,
-          phone: isDemo ? '+91 98201 48210' : '',
-          isDemo
+          id: data.user_id,
+          name: data.full_name,
+          email: data.email,
+          phone: '',
+          isDemo: false
         }
         try {
           localStorage.setItem('mandate_radar_user', JSON.stringify(userObj))
@@ -382,14 +339,6 @@ export const AuthCard: React.FC<AuthCardProps> = ({
           </span>
         </div>
 
-        {/* Demo Auto-fill Helper */}
-        <button
-          type="button"
-          onClick={fillDemoCredentials}
-          className="text-[10px] font-mono px-2 py-0.5 rounded-full border border-[#203E30] bg-[#0E1F17] text-[#BAC8BF] hover:text-[#2DE2B5] hover:border-[#2DE2B5]/50 transition-colors cursor-pointer"
-        >
-          Demo Credentials
-        </button>
       </div>
 
       {/* Title & Subtitle */}
@@ -463,55 +412,19 @@ export const AuthCard: React.FC<AuthCardProps> = ({
       {/* Dynamic Content */}
       <div className="relative">
         {mode === 'google' ? (
-          /* Google Form */
-          <form onSubmit={handleGoogleSubmit} className="space-y-4">
-            <div>
-              <label className="block text-xs font-medium text-[#BAC8BF] mb-1.5">
-                Google Email Address
-              </label>
-              <input
-                type="email"
-                required
-                autoFocus
-                value={googleEmail}
-                onChange={e => setGoogleEmail(e.target.value)}
-                placeholder="yourname@gmail.com"
-                className="w-full px-3.5 py-2.5 text-sm fintech-input"
-              />
-            </div>
-
-            <div>
-              <label className="block text-xs font-medium text-[#BAC8BF] mb-1.5">
-                Full Name
-              </label>
-              <input
-                type="text"
-                required
-                value={googleName}
-                onChange={e => setGoogleName(e.target.value)}
-                placeholder="e.g. Rahul Sharma"
-                className="w-full px-3.5 py-2.5 text-sm fintech-input"
-              />
-            </div>
-
-            <button
-              type="submit"
-              disabled={isLoading}
-              className="w-full h-11 btn-primary text-sm font-semibold tracking-wide"
-            >
-              {isLoading ? (
-                <>
-                  <Loader2 className="w-4 h-4 animate-spin text-[#061A13]" />
-                  <span>Connecting...</span>
-                </>
-              ) : (
-                <>
-                  <span>Sign In with Google</span>
-                  <ArrowRight className="w-4 h-4" />
-                </>
-              )}
-            </button>
-
+          <div className="space-y-4">
+            {import.meta.env.VITE_GOOGLE_CLIENT_ID ? (
+              <div className="flex justify-center">
+                <GoogleLogin
+                  onSuccess={handleGoogleSuccess}
+                  onError={() => setErrorMessage('Google Sign-In was cancelled or failed.')}
+                />
+              </div>
+            ) : (
+              <p className="text-center text-xs text-[#BAC8BF]">
+                Google sign-in is not configured. Use email and password instead.
+              </p>
+            )}
             <button
               type="button"
               onClick={() => { setMode('signin'); setErrorMessage('') }}
@@ -520,7 +433,7 @@ export const AuthCard: React.FC<AuthCardProps> = ({
               <ArrowLeft className="w-3.5 h-3.5" />
               <span>Back to standard login</span>
             </button>
-          </form>
+          </div>
         ) : mode === 'phone_entry' ? (
           /* Phone Entry */
           <form onSubmit={handleSendPhoneOtp} className="space-y-4">
@@ -588,28 +501,12 @@ export const AuthCard: React.FC<AuthCardProps> = ({
         ) : mode === 'otp' ? (
           /* OTP Form */
           <form onSubmit={handleVerifyPhoneOtp} className="space-y-4">
-            {generatedOtp && (
-              <div className="p-3 rounded-xl bg-[#0E1F17] border border-[#2DE2B5]/40 flex items-center justify-between text-xs mb-2">
-                <div>
-                  <span className="text-[10px] text-[#2DE2B5] block uppercase font-mono">SMS Code</span>
-                  <span className="font-mono text-sm text-white font-bold">{generatedOtp}</span>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setOtp(generatedOtp.split(''))}
-                  className="px-2.5 py-1 text-[11px] font-semibold rounded-lg bg-[#2DE2B5] text-[#061A13] hover:brightness-105"
-                >
-                  Auto-fill
-                </button>
-              </div>
-            )}
-
             <div>
               <div className="flex gap-2 sm:gap-3 justify-center">
                 {otp.map((digit, idx) => (
                   <input
                     key={idx}
-                    ref={el => (otpRefs.current[idx] = el)}
+                    ref={el => { otpRefs.current[idx] = el }}
                     type="text"
                     inputMode="numeric"
                     maxLength={1}
