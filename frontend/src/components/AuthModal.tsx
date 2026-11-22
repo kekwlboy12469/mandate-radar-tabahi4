@@ -15,6 +15,7 @@ import {
 } from 'lucide-react'
 import { GoogleLogin } from '@react-oauth/google'
 import { auth, RecaptchaVerifier, signInWithPhoneNumber, ConfirmationResult } from '../lib/firebase'
+import { safeFetchJson } from '../lib/api'
 
 interface AuthModalProps {
   isOpen: boolean
@@ -107,7 +108,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
     try {
       if (tab === 'signup') {
-        const res = await fetch('/api/v1/auth/register', {
+        const { ok, data, error } = await safeFetchJson<any>('/api/v1/auth/register', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -116,9 +117,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             full_name: fullName.trim() || 'Account Holder'
           })
         })
-        const data = await res.json()
-        if (!res.ok) {
-          throw new Error(data.detail || 'Registration failed. Please check your credentials.')
+
+        if (!ok || !data) {
+          throw new Error(error || data?.detail || 'Registration failed. Please check your credentials.')
         }
 
         if (data.access_token) {
@@ -145,7 +146,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
       } else {
         // Sign In
-        const res = await fetch('/api/v1/auth/login', {
+        const { ok, data, error } = await safeFetchJson<any>('/api/v1/auth/login', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -153,9 +154,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             password
           })
         })
-        const data = await res.json()
-        if (!res.ok) {
-          throw new Error(data.detail || 'Invalid email or password.')
+
+        if (!ok || !data) {
+          throw new Error(error || data?.detail || 'Invalid email or password.')
         }
 
         if (data.access_token) {
@@ -197,16 +198,14 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     setErrorMessage('')
 
     try {
-      const res = await fetch('/api/v1/auth/google', {
+      const { ok, data, error } = await safeFetchJson<any>('/api/v1/auth/google', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          credential: credentialResponse.credential
-        })
+        body: JSON.stringify({ credential: credentialResponse.credential })
       })
-      const data = await res.json()
-      if (!res.ok) {
-        throw new Error(data.detail || 'Google authentication failed.')
+
+      if (!ok || !data) {
+        throw new Error(error || data?.detail || 'Failed to authenticate Google identity with Mandate Radar backend.')
       }
 
       if (data.access_token) {
@@ -226,10 +225,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       } catch {}
 
       setIsLoading(false)
-      setToastMsg(`Signed in as ${userObj.name}!`)
+      setToastMsg(`Signed in with Google as ${userObj.name}!`)
       setTimeout(() => {
         onSuccess(userObj)
       }, 300)
+
     } catch (err: any) {
       setIsLoading(false)
       setErrorMessage(err.message || 'Failed to authenticate Google account.')
@@ -254,7 +254,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     e.preventDefault()
     const clean = phoneNumber.replace(/\D/g, '')
     if (clean.length < 10) {
-      setErrorMessage('Please enter a valid 10-digit Indian mobile number.')
+      setErrorMessage('Please enter a valid 10-digit Indian phone number.')
       return
     }
 
@@ -263,38 +263,29 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
     try {
       if (!recaptchaVerifierRef.current) {
-        recaptchaVerifierRef.current = new RecaptchaVerifier(auth, 'firebase-recaptcha-container', {
+        recaptchaVerifierRef.current = new RecaptchaVerifier(auth, 'recaptcha-container', {
           size: 'invisible'
         })
       }
 
-      const fullE164Phone = `+91${clean.slice(-10)}`
-      const confirmation = await signInWithPhoneNumber(auth, fullE164Phone, recaptchaVerifierRef.current)
+      const e164 = `+91${clean.slice(-10)}`
+      const confirmation = await signInWithPhoneNumber(auth, e164, recaptchaVerifierRef.current)
       setConfirmationResult(confirmation)
-      setOtp(['', '', '', '', '', ''])
-      setOtpTimer(60)
       setOtpStep('code')
+      setOtpTimer(60)
       setIsLoading(false)
-      setToastMsg(`Verification code sent to ${fullE164Phone}`)
+      setToastMsg(`Verification code dispatched to ${e164}`)
     } catch (err: any) {
-      console.error('Firebase phone auth error:', err)
       setIsLoading(false)
       if (recaptchaVerifierRef.current) {
         try { recaptchaVerifierRef.current.clear() } catch {}
         recaptchaVerifierRef.current = null
       }
-      const code = err?.code || ''
-      let msg = err?.message || 'Failed to dispatch SMS verification code.'
-      if (code === 'auth/unauthorized-domain') {
-        msg = `Domain "${window.location.hostname}" is not authorized in Firebase Console.`
-      } else if (code === 'auth/billing-not-enabled' || code === 'auth/quota-exceeded') {
-        msg = 'Carrier SMS quota reached. Please use a Firebase Test Number (e.g. +91 9999999999).'
-      }
-      setErrorMessage(msg)
+      setErrorMessage(err.message || 'Failed to send SMS code. Please verify number or use Email.')
     }
   }
 
-  // --- Phone Auth Step 2: Verify Code ---
+  // --- Phone Auth Step 2: Confirm Code ---
   const handleVerifyPhoneOtp = async (e: React.FormEvent) => {
     e.preventDefault()
     const code = otp.join('')
@@ -302,10 +293,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       setErrorMessage('Please enter the full 6-digit verification code.')
       return
     }
-
     if (!confirmationResult) {
-      setErrorMessage('Verification session expired. Please request a new code.')
-      setOtpStep('entry')
+      setErrorMessage('Session expired. Please request a new code.')
       return
     }
 
@@ -316,7 +305,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       const userCredential = await confirmationResult.confirm(code)
       const idToken = await userCredential.user.getIdToken()
 
-      const res = await fetch('/api/v1/auth/phone', {
+      const { ok, data, error } = await safeFetchJson<any>('/api/v1/auth/phone', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -324,12 +313,12 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           full_name: phoneFullName.trim() || undefined
         })
       })
-      const data = await res.json()
-      if (!res.ok) {
-        throw new Error(data.detail || 'Phone authentication failed on server.')
+
+      if (!ok || !data) {
+        throw new Error(error || data?.detail || 'Phone authentication failed on server.')
       }
 
-      if (data?.access_token) {
+      if (data.access_token) {
         localStorage.setItem('mandate_radar_token', data.access_token)
       }
 
@@ -337,7 +326,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         id: data.user_id,
         name: data.full_name,
         email: data.email,
-        phone: `+91 ${phoneNumber.replace(/\D/g, '').slice(-10)}`,
+        phone: `+91 ${phoneNumber.slice(-10)}`,
         accountLabel: `${data.full_name.split(' ')[0]}'s Mandate Radar`,
         isDemo: false
       }
@@ -346,10 +335,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       } catch {}
 
       setIsLoading(false)
-      setToastMsg(`Verified! Welcome ${userObj.name}.`)
+      setToastMsg(`Welcome, ${userObj.name}! Phone verified.`)
       setTimeout(() => {
         onSuccess(userObj)
       }, 300)
+
     } catch (err: any) {
       setIsLoading(false)
       setErrorMessage(err.message || 'Invalid or expired verification code. Please retry.')
@@ -357,53 +347,55 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-md animate-fade-in text-left">
-      <div id="firebase-recaptcha-container"></div>
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-md animate-fade-in">
+      <div id="recaptcha-container" />
 
-      <div className="relative w-full max-w-[440px] bg-[#07110C] border border-[rgba(238,219,202,0.2)] rounded-[32px] p-6 sm:p-8 shadow-2xl text-[#FAF8F5]">
-        
-        {/* Floating Toast */}
-        {toastMsg && (
-          <div className="absolute top-4 left-1/2 -translate-x-1/2 z-50 flex items-center gap-2 px-4 py-2 rounded-full bg-[#2DE2B5] text-[#07110C] font-semibold text-xs shadow-xl animate-fade-in whitespace-nowrap">
-            <CheckCircle2 className="w-4 h-4 text-[#07110C] shrink-0" />
-            <span>{toastMsg}</span>
+      {/* Floating Toast Notification */}
+      {toastMsg && (
+        <div className="fixed top-6 left-1/2 -translate-x-1/2 z-60 bg-[#0E2419] border border-[#2DE2B5] text-[#2DE2B5] px-4 py-2.5 rounded-2xl shadow-2xl flex items-center gap-2 text-xs font-semibold animate-in slide-in-from-top-2">
+          <CheckCircle2 className="w-4 h-4 text-[#2DE2B5] shrink-0" />
+          <span>{toastMsg}</span>
+        </div>
+      )}
+
+      <div className="relative w-full max-w-md bg-[#07110C] border border-white/15 rounded-3xl p-6 sm:p-7 shadow-2xl overflow-hidden text-left">
+        {/* Glow Effects */}
+        <div className="absolute top-0 right-0 -mr-16 -mt-16 w-48 h-48 bg-[#2DE2B5]/10 rounded-full blur-3xl pointer-events-none" />
+        <div className="absolute bottom-0 left-0 -ml-16 -mb-16 w-48 h-48 bg-[#EEDBCA]/10 rounded-full blur-3xl pointer-events-none" />
+
+        {/* Modal Header */}
+        <div className="flex items-start justify-between mb-5">
+          <div>
+            <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-[#0E1F17] border border-[#2DE2B5]/30 text-[11px] font-mono text-[#2DE2B5] mb-2">
+              <Lock className="w-3 h-3 text-[#2DE2B5]" />
+              <span>Mandate Radar Authentication</span>
+            </div>
+            <h2 className="text-xl font-bold text-white tracking-tight">
+              {tab === 'signin' && 'Sign In to Your Account'}
+              {tab === 'signup' && 'Create Your Free Account'}
+              {tab === 'phone' && 'Phone SMS Verification'}
+            </h2>
+            <p className="text-xs text-[#9BAEA2] mt-0.5">
+              Zero-friction portfolio detection & recurring audit
+            </p>
           </div>
-        )}
 
-        {/* Close Button */}
-        <button
-          onClick={onClose}
-          className="absolute top-6 right-6 w-8 h-8 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center text-white/80 hover:text-white transition-colors cursor-pointer"
-        >
-          <X className="w-4 h-4" />
-        </button>
-
-        {/* Header */}
-        <div className="text-center mb-6">
-          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-[#143323] border border-[#2DE2B5]/30 text-[#2DE2B5] text-xs font-mono font-semibold mb-3">
-            <Sparkles className="w-3.5 h-3.5" />
-            <span>MANDATE RADAR</span>
-          </div>
-          <h2 className="text-xl font-bold tracking-tight text-white">
-            {tab === 'signup' ? 'Create Your Account' : tab === 'phone' ? 'Phone Verification' : 'Welcome Back'}
-          </h2>
-          <p className="text-xs text-[#9BAEA2] mt-1">
-            {tab === 'signup'
-              ? 'Unmask recurring subscriptions and parent conglomerate exposure.'
-              : tab === 'phone'
-              ? 'Sign in securely with instant phone authentication.'
-              : 'Sign in to access your portfolio radar and recurring auto-debits.'}
-          </p>
+          <button
+            onClick={onClose}
+            className="p-1.5 rounded-xl bg-white/5 hover:bg-white/10 text-[#9BAEA2] hover:text-white transition-colors cursor-pointer"
+          >
+            <X className="w-4 h-4" />
+          </button>
         </div>
 
-        {/* Clean Auth Tabs (Sign In | Create Account | Phone) */}
+        {/* Navigation Tabs */}
         <div className="flex p-1 bg-[#0E1F17] border border-white/10 rounded-xl mb-5">
           <button
             type="button"
             onClick={() => { setTab('signin'); setErrorMessage('') }}
-            className={`flex-1 py-2 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
+            className={`flex-1 py-1.5 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
               tab === 'signin'
-                ? 'bg-[#2DE2B5] text-[#07110C] shadow-sm font-bold'
+                ? 'bg-[#2DE2B5] text-[#07110C] shadow-sm'
                 : 'text-[#9BAEA2] hover:text-white'
             }`}
           >
@@ -412,9 +404,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           <button
             type="button"
             onClick={() => { setTab('signup'); setErrorMessage('') }}
-            className={`flex-1 py-2 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
+            className={`flex-1 py-1.5 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
               tab === 'signup'
-                ? 'bg-[#2DE2B5] text-[#07110C] shadow-sm font-bold'
+                ? 'bg-[#2DE2B5] text-[#07110C] shadow-sm'
                 : 'text-[#9BAEA2] hover:text-white'
             }`}
           >
@@ -423,9 +415,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           <button
             type="button"
             onClick={() => { setTab('phone'); setErrorMessage('') }}
-            className={`flex-1 py-2 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
+            className={`flex-1 py-1.5 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
               tab === 'phone'
-                ? 'bg-[#2DE2B5] text-[#07110C] shadow-sm font-bold'
+                ? 'bg-[#2DE2B5] text-[#07110C] shadow-sm'
                 : 'text-[#9BAEA2] hover:text-white'
             }`}
           >
@@ -433,17 +425,17 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           </button>
         </div>
 
-        {/* Error Alert */}
+        {/* Error Alert Box */}
         {errorMessage && (
-          <div className="mb-4 p-3 rounded-xl bg-red-500/10 border border-red-500/20 text-red-400 text-xs flex items-center gap-2">
-            <AlertCircle className="w-4 h-4 shrink-0" />
-            <span>{errorMessage}</span>
+          <div className="mb-4 p-3 rounded-xl bg-red-950/40 border border-red-500/30 text-red-200 text-xs flex items-start gap-2 animate-in fade-in">
+            <AlertCircle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
+            <div className="flex-1 leading-relaxed">{errorMessage}</div>
           </div>
         )}
 
-        {/* TAB 1 & 2: Email & Password (Sign In / Create Account) */}
+        {/* TAB 1 & 2: Email & Password Form (Sign In / Register) */}
         {tab !== 'phone' ? (
-          <form onSubmit={handleSubmit} className="space-y-4">
+          <form onSubmit={handleSubmit} className="space-y-3.5">
             {tab === 'signup' && (
               <div>
                 <label className="block text-xs font-medium text-[#EEDBCA] mb-1.5">
@@ -576,12 +568,10 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                     <input
                       type="tel"
                       required
-                      autoFocus
-                      maxLength={10}
                       value={phoneNumber}
-                      onChange={e => setPhoneNumber(e.target.value.replace(/\D/g, ''))}
-                      placeholder="98765 43210"
-                      className="flex-1 px-3.5 py-2.5 text-xs bg-[#0E1F17] border border-white/15 text-white rounded-xl focus:border-[#2DE2B5] focus:outline-none font-mono"
+                      onChange={e => setPhoneNumber(e.target.value)}
+                      placeholder="98201 48210"
+                      className="flex-1 px-4 py-2.5 text-xs bg-[#0E1F17] border border-white/15 text-white rounded-xl focus:border-[#2DE2B5] focus:outline-none transition-colors font-mono"
                     />
                   </div>
                 </div>
@@ -594,8 +584,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                     type="text"
                     value={phoneFullName}
                     onChange={e => setPhoneFullName(e.target.value)}
-                    placeholder="e.g. Rahul Sharma"
-                    className="w-full px-3.5 py-2.5 text-xs bg-[#0E1F17] border border-white/15 text-white rounded-xl focus:border-[#2DE2B5] focus:outline-none"
+                    placeholder="e.g. Arun Sharma"
+                    className="w-full px-4 py-2.5 text-xs bg-[#0E1F17] border border-white/15 text-white rounded-xl focus:border-[#2DE2B5] focus:outline-none transition-colors"
                   />
                 </div>
 
@@ -607,23 +597,25 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                   {isLoading ? (
                     <>
                       <Loader2 className="w-4 h-4 animate-spin text-[#07110C]" />
-                      <span>Sending Code...</span>
+                      <span>Sending SMS...</span>
                     </>
                   ) : (
                     <>
+                      <Smartphone className="w-4 h-4" />
                       <span>Send Verification Code</span>
-                      <ArrowRight className="w-4 h-4" />
                     </>
                   )}
                 </button>
               </form>
             ) : (
-              /* OTP Code Step */
               <form onSubmit={handleVerifyPhoneOtp} className="space-y-4">
-                <div className="text-center mb-2">
+                <div className="text-center">
                   <p className="text-xs text-[#9BAEA2]">
-                    Enter the 6-digit verification code sent to <strong className="text-white">+91 {phoneNumber}</strong>
+                    Enter the 6-digit code sent to +91 {phoneNumber.slice(-10)}
                   </p>
+                  <div className="text-xs font-mono text-[#2DE2B5] mt-1">
+                    {otpTimer > 0 ? `Resend code in ${otpTimer}s` : 'You can resend code now'}
+                  </div>
                 </div>
 
                 <div className="flex gap-2 justify-center">

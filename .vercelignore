@@ -1,9 +1,0 @@
-api/tests/
-backend/tests/
-tests/
-.pytest_cache/
-*.pyc
-__pycache__/
-.env
-.env.*
-scratch/

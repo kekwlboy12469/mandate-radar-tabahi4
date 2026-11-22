@@ -286,6 +286,7 @@ REFERENCE_MERCHANTS = [
             r"NETFLIX\s+ENTERTAINMENT\s+SVCS",
             r"UPI/CR/\d+/NETFLIX/AUTOPAY",
             r"NETFLIX\s+INDIA\s+MUMBAI",
+            r"\bNETFLIX(\s+INDIA)?\b",
             r"POS\s+DEBIT\s+NETFLIX\.COM",
             r"NETFLIX\s+SUBSCRIPTION"
         ],
@@ -313,6 +314,7 @@ REFERENCE_MERCHANTS = [
             r"UPI/CR/\d+/SPOTIFY/PREMIUM",
             r"PAYTM\*SPOTIFY\s+MANDATE",
             r"SPOTIFY\s+AB\s+STOCKHOLM",
+            r"\bSPOTIFY(\s+INDIA)?\b",
             r"POS\s+SPOTIFY\s+INDIA"
         ],
         "default_mechanism": "UPI_AUTOPAY",

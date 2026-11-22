@@ -18,6 +18,7 @@ from app.services.integrations.gmail_client import GmailClient
 from app.services.pre_debit_matcher import PreDebitMatcher
 from app.services.merchant_resolver import MerchantResolver
 from app.services.deduplication import TransactionDeduplicator
+from app.api.v1.auth import get_current_user
 from app.models.transaction import Transaction
 from app.models.account import Account
 from app.models.user import User
@@ -108,6 +109,11 @@ def get_integrations_status(db: Session = Depends(get_db)):
                 "last_sync": sms_cred.last_sync_at.isoformat() if (sms_cred and sms_cred.last_sync_at) else None,
                 "dlt_filtering": True,
                 "notification_listener_ready": True
+            },
+            "sms_receiver": {
+                "active": True,
+                "paired": sms_cred is not None and sms_cred.pairing_token is not None,
+                "last_sync": sms_cred.last_sync_at.isoformat() if (sms_cred and sms_cred.last_sync_at) else None
             }
         },
         "metrics": metrics
@@ -195,18 +201,21 @@ def sync_gmail_mock(payload: Dict[str, Any] = Body(...)):
     """
     Direct parsing endpoint for email message batches (used for testing and direct integrations).
     """
-    records = []
-    for msg in payload.get("messages", []):
+    msgs = payload.get("messages", [])
+    receipts = []
+    for msg in msgs:
         parsed = GmailSyncService.parse_email(
             subject=msg.get("subject", ""),
             sender=msg.get("sender", ""),
             body=msg.get("body", "")
         )
         if parsed.get("is_financial"):
-            records.append(parsed)
+            receipts.append(parsed)
     return {
-        "financial_receipts_found": len(records),
-        "receipts": records
+        "status": "SUCCESS",
+        "total_messages": len(msgs),
+        "financial_receipts_found": len(receipts),
+        "receipts": receipts
     }
 
 @router.post("/gmail/sync-now")
