@@ -35,7 +35,7 @@ class Settings:
     
     # JWT & Auth
     # Phase 1: Read secret from JWT_SECRET env var. Fail at startup if missing.
-    _raw_secret: Optional[str] = os.getenv("JWT_SECRET") or os.getenv("SECRET_KEY") or "b79a5e8ad0f70dbbe8cfd82de297e68dbb09efcd78d91aee0920dce5c742c8d2"
+    _raw_secret: Optional[str] = os.getenv("JWT_SECRET") or os.getenv("SECRET_KEY") or "mandate_radar_dev_jwt_secret_key_892134789123"
     SECRET_KEY: str = _raw_secret
     JWT_SECRET: str = _raw_secret
     ALGORITHM: str = "HS256"
