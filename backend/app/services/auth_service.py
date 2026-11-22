@@ -97,10 +97,17 @@ def decode_access_token(token: str) -> Optional[Dict[str, Any]]:
         if not hmac.compare_digest(expected_sig, actual_sig):
             return None
         
+        header_json = json.loads(_b64_url_decode(hdr_b64).decode("utf-8"))
+        if not isinstance(header_json, dict) or header_json.get("alg") != "HS256":
+            return None
         payload_json = json.loads(_b64_url_decode(payload_b64).decode("utf-8"))
+        if not isinstance(payload_json, dict):
+            return None
         exp = payload_json.get("exp")
-        if exp and datetime.utcnow().timestamp() > exp:
-            return None # Expired
+        if isinstance(exp, bool) or not isinstance(exp, (int, float)):
+            return None
+        if datetime.utcnow().timestamp() >= exp:
+            return None
             
         return payload_json
     except Exception:
@@ -108,21 +115,13 @@ def decode_access_token(token: str) -> Optional[Dict[str, Any]]:
 
 
 def verify_google_id_token(token: str) -> Optional[Dict[str, Any]]:
-    """Verifies a Google ID token via google.oauth2.id_token or test mock."""
-    if token == "valid_google_token":
-        return {
-            "email": "test.google@example.com",
-            "name": "Test Google User",
-            "email_verified": True,
-            "sub": "mock_google_sub_123"
-        }
-    if token == "malformed_token_xyz":
+    """Verifies a Google ID token against the configured OAuth client."""
+    if not settings.GOOGLE_CLIENT_ID:
         return None
     try:
         from google.oauth2 import id_token
         from google.auth.transport import requests
-        client_id = settings.GOOGLE_CLIENT_ID if settings.GOOGLE_CLIENT_ID else None
-        id_info = id_token.verify_oauth2_token(token, requests.Request(), client_id)
+        id_info = id_token.verify_oauth2_token(token, requests.Request(), settings.GOOGLE_CLIENT_ID)
         return id_info
     except Exception:
         return None

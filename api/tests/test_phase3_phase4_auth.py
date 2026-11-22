@@ -75,6 +75,32 @@ def test_demo_account_direct_login_blocked(client):
     assert resp.status_code == 403
     assert "demo user" in resp.json()["detail"].lower()
 
+def test_email_registration_and_login_work(client):
+    email = f"login_{uuid.uuid4().hex[:8]}@example.com"
+    password = "CorrectHorseBatteryStaple!"
+    registered = client.post("/api/v1/auth/register", json={
+        "email": email,
+        "password": password,
+        "full_name": "Login Test"
+    })
+    assert registered.status_code == 200
+
+    logged_in = client.post("/api/v1/auth/login", json={
+        "email": email.upper(),
+        "password": password
+    })
+    assert logged_in.status_code == 200
+    token = logged_in.json()["access_token"]
+    profile = client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {token}"})
+    assert profile.status_code == 200
+    assert profile.json()["email"] == email
+
+    wrong_password = client.post("/api/v1/auth/login", json={
+        "email": email,
+        "password": "not-the-password"
+    })
+    assert wrong_password.status_code == 400
+
 def test_email_normalization_and_google_conflict(client):
     # 1. Register a user via Google
     google_email = f"user_{uuid.uuid4().hex[:6]}@gmail.com"
