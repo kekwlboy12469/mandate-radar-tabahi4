@@ -22,6 +22,17 @@ def clean_descriptor(descriptor: str) -> str:
     text = re.sub(r"\s+", " ", text).strip()
     return text
 
+def normalize_narration(narration: str) -> str:
+    """
+    Normalizes bank narration strings for canonical merchant and alias resolution:
+    Strips transaction IDs, reference numbers, and rail prefixes (e.g. UPI/P2M/491823/SPOTIFY -> spotify).
+    """
+    text = str(narration).strip().lower()
+    text = re.sub(r"^(upi\s*/\s*p2m\s*/|upi\s*/|nach\s*/|ach\s*/|pos\s*/|inb\s*/|card\s*-?\s*si\s*/)", "", text)
+    text = re.sub(r"\b\d{4,}\b", "", text)
+    text = re.sub(r"[#*\/\\\-_:]", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
 def generate_charge_hash(user_id: str, account_label: str, date: str, amount: float, descriptor: str, ref_or_row_idx: str = "") -> str:
     """
     Computes an idempotent cryptographic hash for a transaction line:

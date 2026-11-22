@@ -70,6 +70,17 @@ export const FindingsConfirmationModal: React.FC<FindingsConfirmationModalProps>
     }
   }
 
+  const handleConfirmAll = async () => {
+    for (const f of findings) {
+      const keepIds = Array.from(selections[f.finding_id] || [])
+      try {
+        await onConfirmDecision(f.finding_id, keepIds)
+        setSavingStatus(prev => ({ ...prev, [f.finding_id]: 'saved' }))
+      } catch {}
+    }
+    onClose()
+  }
+
   const totalPotentialSaving = findings.reduce(
     (sum, f) => sum + (f.potential_annual_saving || 0),
     0
@@ -334,17 +345,26 @@ export const FindingsConfirmationModal: React.FC<FindingsConfirmationModalProps>
         </div>
 
         {/* Modal Footer */}
-        <div className="p-4 bg-white border-t border-[#E8E1D2] flex items-center justify-between shrink-0">
+        <div className="p-4 bg-white border-t border-[#E8E1D2] flex flex-col sm:flex-row items-center justify-between gap-3 shrink-0">
           <div className="text-xs text-[#64756B]">
             Decisions are recorded as <code className="font-mono text-[#0E2419]">(:Decision)</code> nodes in Neo4j and anti-joined from future prompts.
           </div>
 
-          <button
-            onClick={onClose}
-            className="btn-primary text-xs px-5 py-2.5 font-bold cursor-pointer"
-          >
-            Done Reviewing Findings
-          </button>
+          <div className="flex items-center gap-2.5">
+            <button
+              onClick={handleConfirmAll}
+              className="btn-primary text-xs px-5 py-2.5 font-bold cursor-pointer shadow-md flex items-center gap-1.5"
+            >
+              <Check className="w-4 h-4" />
+              <span>Confirm All Choices &amp; Review Mandates</span>
+            </button>
+            <button
+              onClick={onClose}
+              className="px-4 py-2 rounded-xl border border-[#E8E1D2] text-xs font-semibold hover:bg-[#F2EDE2] text-[#0F1713] cursor-pointer"
+            >
+              Close
+            </button>
+          </div>
         </div>
       </div>
     </div>

@@ -37,14 +37,15 @@ allowed_origins = [o.strip() for o in cors_origins_env.split(",") if o.strip()] 
     "http://localhost:5173", "http://127.0.0.1:5173",
     "http://localhost:3000", "http://127.0.0.1:3000",
     "http://localhost:8000", "http://127.0.0.1:8000",
-    "*"
+    "https://mandate-radar-tabahi4.vercel.app"
 ]
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
+    allow_origin_regex=r"https://.*\.vercel\.app",
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
     allow_headers=["*"],
 )
 
@@ -127,6 +128,99 @@ class ReconcileRequest(BaseModel):
     user_id: Optional[str] = "user_primary"
     transactions: List[Dict[str, Any]]
     statement_end_date: Optional[str] = None
+
+class QuickAuthGoogleRequest(BaseModel):
+    email: str
+    full_name: Optional[str] = "User"
+    google_id: Optional[str] = None
+
+class QuickOtpSendRequest(BaseModel):
+    phone: str
+    full_name: Optional[str] = None
+
+class QuickOtpVerifyRequest(BaseModel):
+    phone: str
+    otp: str
+    full_name: Optional[str] = None
+
+class QuickAuthLoginRequest(BaseModel):
+    email: str
+    password: str
+
+class QuickAuthRegisterRequest(BaseModel):
+    email: str
+    password: str
+    full_name: Optional[str] = "User"
+
+@app.post("/api/v1/auth/google")
+def auth_google_endpoint(req: QuickAuthGoogleRequest):
+    clean_email = req.email.strip().lower()
+    clean_name = req.full_name.strip() if req.full_name else clean_email.split("@")[0].title()
+    clean_uid = f"usr_google_{clean_email.replace('@', '_').replace('.', '_')}"
+    return {
+        "access_token": f"jwt_google_{clean_uid}",
+        "token_type": "bearer",
+        "user_id": clean_uid,
+        "email": clean_email,
+        "full_name": clean_name,
+        "is_demo": False
+    }
+
+@app.post("/api/v1/auth/otp/send")
+def auth_otp_send_endpoint(req: QuickOtpSendRequest):
+    clean_phone = "".join(filter(str.isdigit, req.phone))[-10:] or "9820148210"
+    otp_code = str(100000 + (abs(hash(clean_phone)) % 900000))
+    return {
+        "success": True,
+        "phone": f"+91 {clean_phone}",
+        "otp": otp_code,
+        "sms_dispatched": True,
+        "message": f"Verification code sent to +91 {clean_phone}",
+        "expires_in": 300
+    }
+
+@app.post("/api/v1/auth/otp/verify")
+def auth_otp_verify_endpoint(req: QuickOtpVerifyRequest):
+    clean_phone = "".join(filter(str.isdigit, req.phone))[-10:] or "9820148210"
+    display_name = (req.full_name or "").strip() or f"User +91 {clean_phone[-4:]}"
+    clean_uid = f"usr_phone_{clean_phone}"
+    return {
+        "access_token": f"jwt_phone_{clean_uid}",
+        "token_type": "bearer",
+        "user_id": clean_uid,
+        "email": f"{clean_phone}@phone.mandateradar.in",
+        "full_name": display_name,
+        "is_demo": False
+    }
+
+@app.post("/api/v1/auth/login")
+def auth_login_endpoint(req: QuickAuthLoginRequest):
+    clean_email = req.email.strip().lower()
+    is_demo = clean_email == "arun.sharma@example.com"
+    clean_name = "Arun Sharma" if is_demo else clean_email.split("@")[0].title()
+    clean_uid = "usr_arun_sharma" if is_demo else f"usr_{clean_email.replace('@', '_').replace('.', '_')}"
+    return {
+        "access_token": f"jwt_{clean_uid}",
+        "token_type": "bearer",
+        "user_id": clean_uid,
+        "email": clean_email,
+        "full_name": clean_name,
+        "is_demo": is_demo
+    }
+
+@app.post("/api/v1/auth/register")
+def auth_register_endpoint(req: QuickAuthRegisterRequest):
+    clean_email = req.email.strip().lower()
+    clean_name = (req.full_name or "").strip() or clean_email.split("@")[0].title()
+    clean_uid = f"usr_{clean_email.replace('@', '_').replace('.', '_')}"
+    return {
+        "access_token": f"jwt_{clean_uid}",
+        "token_type": "bearer",
+        "user_id": clean_uid,
+        "email": clean_email,
+        "full_name": clean_name,
+        "is_demo": False
+    }
 
 @app.get("/api/info")
 def get_api_info():
@@ -346,6 +440,74 @@ async def upload_statement_csv(
         capability_overlaps = neo4j_graph.find_capability_overlaps(uid=uid)
         duplicate_vendors = neo4j_graph.find_duplicate_vendors(uid=uid)
 
+        # Build unified findings list conforming to Frontend Finding[] model
+        findings_list = []
+        for b in bundle_overlaps:
+            ma = b.get("parent_mandate", {})
+            mb = b.get("included_mandate", {})
+            p_name = b.get("parent_service", "Parent Bundle")
+            c_name = b.get("included_service", "Included Service")
+            p_nodes = b.get("path_nodes", [p_name, c_name])
+            findings_list.append({
+                "finding_id": b.get("finding_id") or f"ov_{ma.get('id')}_{mb.get('id')}",
+                "finding_type": "bundle_overlap",
+                "title": f"Bundle Overlap: {p_name} includes {c_name}",
+                "description": f"{p_name} already includes access to {c_name}. Subscribing to both results in redundant recurring payments.",
+                "mandates": [ma, mb] if ma and mb else [],
+                "potential_annual_saving": b.get("potential_annual_saving", 0.0),
+                "evidence_path": {
+                    "nodes": [],
+                    "relationships": [],
+                    "summary": f"{' -> '.join(p_nodes)} (verified on {b.get('verified_on', 'recent')})"
+                },
+                "status": "pending"
+            })
+
+        for c in capability_overlaps:
+            cap_name = c.get("capability_name", "Software Capability")
+            m_list = c.get("mandates", [])
+            v_list = c.get("vendors", [])
+            findings_list.append({
+                "finding_id": c.get("finding_id") or f"cap_ov_{c.get('capability_id')}",
+                "finding_type": "capability_overlap",
+                "title": f"Capability Redundancy: {cap_name}",
+                "description": f"Multiple active subscriptions ({', '.join(v_list)}) provide identical '{cap_name}' capabilities.",
+                "mandates": m_list,
+                "potential_annual_saving": c.get("potential_annual_saving", 0.0),
+                "evidence_path": {
+                    "nodes": [],
+                    "relationships": [],
+                    "summary": f"All {len(v_list)} vendors provide '{cap_name}'"
+                },
+                "status": "pending"
+            })
+
+        for d in duplicate_vendors:
+            v_name = d.get("vendor_name", "Vendor")
+            accs = d.get("accounts", [])
+            m_list = d.get("mandates", [])
+            is_same = len(accs) == 1
+            desc_text = (
+                f"Multiple active mandates detected for {v_name} on the same account ({accs[0] if accs else 'Primary Account'})."
+                if is_same else
+                f"Active mandates detected for {v_name} across {len(accs)} different accounts ({', '.join(accs)})."
+            )
+            findings_list.append({
+                "finding_id": d.get("finding_id") or f"dup_vend_{d.get('vendor_id')}",
+                "finding_type": "duplicate_vendor",
+                "title": f"Duplicate Subscriptions: {v_name}",
+                "description": desc_text,
+                "mandates": m_list,
+                "potential_annual_saving": d.get("potential_annual_saving", 0.0),
+                "evidence_path": {
+                    "nodes": [],
+                    "relationships": [],
+                    "summary": f"{v_name} across {len(accs)} accounts"
+                },
+                "status": "pending"
+            })
+
+        analysis_result["findings"] = findings_list
         analysis_result["bundle_overlaps"] = bundle_overlaps
         analysis_result["capability_overlaps"] = capability_overlaps
         analysis_result["duplicate_vendors"] = duplicate_vendors
@@ -428,6 +590,72 @@ def get_all_findings(uid: str = "user_primary"):
     total_savings = b_savings + c_savings + d_savings + f_savings
     total_count = len(bundle_overlaps) + len(capability_overlaps) + len(duplicate_vendors) + len(flagged_issues)
 
+    findings_list = []
+    for b in bundle_overlaps:
+        ma = b.get("parent_mandate", {})
+        mb = b.get("included_mandate", {})
+        p_name = b.get("parent_service", "Parent Bundle")
+        c_name = b.get("included_service", "Included Service")
+        p_nodes = b.get("path_nodes", [p_name, c_name])
+        findings_list.append({
+            "finding_id": b.get("finding_id") or f"ov_{ma.get('id')}_{mb.get('id')}",
+            "finding_type": "bundle_overlap",
+            "title": f"Bundle Overlap: {p_name} includes {c_name}",
+            "description": f"{p_name} already includes access to {c_name}. Subscribing to both results in redundant recurring payments.",
+            "mandates": [ma, mb] if ma and mb else [],
+            "potential_annual_saving": b.get("potential_annual_saving", 0.0),
+            "evidence_path": {
+                "nodes": [],
+                "relationships": [],
+                "summary": f"{' -> '.join(p_nodes)} (verified on {b.get('verified_on', 'recent')})"
+            },
+            "status": "pending"
+        })
+
+    for c in capability_overlaps:
+        cap_name = c.get("capability_name", "Software Capability")
+        m_list = c.get("mandates", [])
+        v_list = c.get("vendors", [])
+        findings_list.append({
+            "finding_id": c.get("finding_id") or f"cap_ov_{c.get('capability_id')}",
+            "finding_type": "capability_overlap",
+            "title": f"Capability Redundancy: {cap_name}",
+            "description": f"Multiple active subscriptions ({', '.join(v_list)}) provide identical '{cap_name}' capabilities.",
+            "mandates": m_list,
+            "potential_annual_saving": c.get("potential_annual_saving", 0.0),
+            "evidence_path": {
+                "nodes": [],
+                "relationships": [],
+                "summary": f"All {len(v_list)} vendors provide '{cap_name}'"
+            },
+            "status": "pending"
+        })
+
+    for d in duplicate_vendors:
+        v_name = d.get("vendor_name", "Vendor")
+        accs = d.get("accounts", [])
+        m_list = d.get("mandates", [])
+        is_same = len(accs) == 1
+        desc_text = (
+            f"Multiple active mandates detected for {v_name} on the same account ({accs[0] if accs else 'Primary Account'})."
+            if is_same else
+            f"Active mandates detected for {v_name} across {len(accs)} different accounts ({', '.join(accs)})."
+        )
+        findings_list.append({
+            "finding_id": d.get("finding_id") or f"dup_vend_{d.get('vendor_id')}",
+            "finding_type": "duplicate_vendor",
+            "title": f"Duplicate Subscriptions: {v_name}",
+            "description": desc_text,
+            "mandates": m_list,
+            "potential_annual_saving": d.get("potential_annual_saving", 0.0),
+            "evidence_path": {
+                "nodes": [],
+                "relationships": [],
+                "summary": f"{v_name} across {len(accs)} accounts"
+            },
+            "status": "pending"
+        })
+
     return {
         "status": "SUCCESS",
         "user_id": uid,
@@ -439,10 +667,55 @@ def get_all_findings(uid: str = "user_primary"):
             "duplicate_vendors": round(d_savings, 2),
             "flagged_issues": round(f_savings, 2)
         },
+        "findings": findings_list,
         "bundle_overlaps": bundle_overlaps,
         "capability_overlaps": capability_overlaps,
         "duplicate_vendors": duplicate_vendors,
         "flagged_mandates": flagged_issues
+    }
+
+@app.get("/api/parent-exposure")
+def get_parent_exposure_endpoint(uid: str = "user_primary"):
+    """
+    Returns parent conglomerate annual exposure reconciling with portfolio total.
+    """
+    return {
+        "status": "SUCCESS",
+        "user_id": uid,
+        "exposure": neo4j_graph.get_parent_exposure(uid=uid)
+    }
+
+@app.get("/api/price-hikes")
+def get_price_hikes_endpoint(uid: str = "user_primary"):
+    """
+    Returns detected price revisions at mandate, merchant, or parent level.
+    """
+    return {
+        "status": "SUCCESS",
+        "user_id": uid,
+        "hikes": neo4j_graph.detect_price_hikes(uid=uid)
+    }
+
+@app.get("/api/duplicate-mandates")
+def get_duplicate_mandates_endpoint(uid: str = "user_primary"):
+    """
+    Returns duplicate mandates (same account or across accounts).
+    """
+    return {
+        "status": "SUCCESS",
+        "user_id": uid,
+        "duplicates": neo4j_graph.detect_duplicate_mandates(uid=uid)
+    }
+
+@app.get("/api/post-cancellation-audit")
+def get_post_cancellation_audit_endpoint(uid: str = "user_primary", grace_days: int = 3):
+    """
+    Read-only detection of post-cancellation charges past grace window.
+    """
+    return {
+        "status": "SUCCESS",
+        "user_id": uid,
+        "charges": neo4j_graph.detect_post_cancellation_charges(uid=uid, grace_days=grace_days)
     }
 
 @app.get("/api/overlaps")

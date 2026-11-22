@@ -67,3 +67,4 @@ def send_welcome_email(recipient_email: str, recipient_name: str) -> bool:
     except Exception as e:
         logger.error(f"Failed to send email to {recipient_email}: {e}")
         return False
+

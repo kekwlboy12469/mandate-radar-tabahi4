@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import type { Mandate } from '../types'
+import type { Mandate, Finding } from '../types'
 import { inr, issueOf, ISSUE_LABEL, type IssueKey } from '../lib/format'
 import {
   ChevronRight,
@@ -24,6 +24,8 @@ type Props = {
   onOpen: (m: Mandate) => void
   onUploadStatement?: () => void
   onLoadDemoData?: () => void
+  findings?: Finding[]
+  onReviewFindings?: () => void
 }
 
 type ExtendedFilter = 'all' | IssueKey | 'marked_cancelled' | 'still_charging' | 'suggested_cancel'
@@ -76,7 +78,11 @@ export function RadarView({
   onToggle,
   onCancelFlagged,
   onClear,
-  onOpen
+  onOpen,
+  onUploadStatement,
+  onLoadDemoData,
+  findings,
+  onReviewFindings
 }: Props) {
   const [filter, setFilter] = useState<ExtendedFilter>('all')
 
@@ -114,7 +120,7 @@ export function RadarView({
     ['trial', 'Trial trap'],
     ['zombie', 'Unused'],
     ['unk', 'Unrecognised'],
-    ['marked_cancelled', 'Marked cancelled'],
+    ['marked_cancelled', 'Cancelled'],
     ['still_charging', 'Still charging'],
     ['suggested_cancel', 'Suggested to cancel']
   ]
@@ -204,6 +210,41 @@ export function RadarView({
           </div>
         </div>
       </section>
+
+      {/* Neo4j Overlap Analysis Banner */}
+      {findings && findings.length > 0 && (
+        <div className="p-5 sm:p-6 rounded-3xl bg-gradient-to-r from-[#0E2419] to-[#16382B] border border-[#2DE2B5]/40 text-[#F5EEDB] shadow-lg flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+          <div className="flex items-start gap-3.5">
+            <div className="w-10 h-10 rounded-2xl bg-[#2DE2B5]/15 border border-[#2DE2B5]/30 flex items-center justify-center text-[#2DE2B5] shrink-0 mt-0.5">
+              <Sparkles className="w-5 h-5" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] font-mono uppercase tracking-wider text-[#2DE2B5] font-bold">
+                  Neo4j Graph Identified {findings.length} Overlap Group{findings.length > 1 ? 's' : ''}
+                </span>
+                <span className="w-2 h-2 rounded-full bg-[#2DE2B5] animate-ping" />
+              </div>
+              <h3 className="text-base font-bold text-white mt-0.5">
+                Redundant Subscriptions &amp; Bundles Detected
+              </h3>
+              <p className="text-xs text-[#BAC8BF] mt-0.5 max-w-xl">
+                Some subscriptions already bundle services you pay for separately (e.g. YouTube Premium includes YouTube Music, or duplicate cloud tools). Choose which to keep to optimize your spend.
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-3 shrink-0 self-end sm:self-center">
+            <button
+              onClick={onReviewFindings}
+              className="px-5 py-2.5 rounded-xl bg-[#2DE2B5] hover:bg-[#25C49C] text-[#061A13] text-xs font-bold transition-all shadow-md flex items-center gap-2 cursor-pointer"
+            >
+              <Sparkles className="w-4 h-4" />
+              <span>Review Overlaps &amp; Choose Which to Keep</span>
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Filter Chips - Sand & Forest Theme */}
       <div className="flex flex-wrap items-center gap-2 pt-2" role="group" aria-label="Filter mandates">
@@ -314,15 +355,28 @@ export function RadarView({
                 {m.status === 'marked_cancelled' && (
                   <span className="px-2.5 py-0.5 rounded-full text-xs font-bold bg-amber-100 text-amber-800 border border-amber-300 flex items-center gap-1">
                     <Clock className="w-3 h-3 text-amber-600" />
-                    <span>Marked cancelled</span>
+                    <span>Cancelled</span>
                   </span>
                 )}
 
                 {m.status === 'suggested_cancel' && (
-                  <span className="px-2.5 py-0.5 rounded-full text-xs font-bold bg-purple-100 text-purple-800 border border-purple-300 flex items-center gap-1">
-                    <Sparkles className="w-3 h-3 text-purple-600" />
-                    <span>Suggested cancel</span>
-                  </span>
+                  <div className="flex items-center gap-2">
+                    <span className="px-2.5 py-0.5 rounded-full text-xs font-bold bg-purple-100 text-purple-800 border border-purple-300 flex items-center gap-1">
+                      <Sparkles className="w-3 h-3 text-purple-600" />
+                      <span>Suggested to cancel</span>
+                    </span>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        onOpen(m)
+                      }}
+                      className="px-2.5 py-0.5 rounded-full bg-[#DC2626] hover:bg-[#B91C1C] text-white text-[10px] font-bold transition-all shadow-sm flex items-center gap-1 cursor-pointer shrink-0"
+                    >
+                      <AlertTriangle className="w-3 h-3" />
+                      <span>Cancel this mandate</span>
+                    </button>
+                  </div>
                 )}
 
                 {m.status === 'keep_confirmed' && (

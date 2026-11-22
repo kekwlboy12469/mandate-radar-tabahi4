@@ -2,7 +2,7 @@
 Authentication API Router (v1)
 Full support for Email/Password, Dynamic Phone OTP Verification, and Google OAuth.
 """
-from fastapi import APIRouter, Depends, HTTPException, status, Header, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, status, Header
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from typing import Optional, Dict, Any
@@ -15,7 +15,6 @@ from app.core.db import get_db
 from app.models.user import User
 from app.models.account import Account
 from app.services.auth_service import hash_password, verify_password, create_access_token, decode_access_token
-from app.services.email_service import send_welcome_email
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
@@ -83,7 +82,7 @@ def get_current_user(
     return user
 
 @router.post("/register", response_model=TokenResponse)
-def register_user(req: RegisterRequest, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+def register_user(req: RegisterRequest, db: Session = Depends(get_db)):
     clean_email = req.email.strip().lower()
     existing = db.query(User).filter(User.email == clean_email).first()
     if existing:
@@ -109,12 +108,6 @@ def register_user(req: RegisterRequest, background_tasks: BackgroundTasks, db: S
     db.add(account)
     db.commit()
     
-    # Asynchronously dispatch registration welcome email in background
-    try:
-        background_tasks.add_task(send_welcome_email, user.email, user.full_name)
-    except Exception:
-        pass
-
     token = create_access_token({"sub": user.id, "email": user.email})
     return TokenResponse(
         access_token=token,
@@ -148,6 +141,7 @@ def send_otp(req: SendOtpRequest):
         raise HTTPException(status_code=400, detail="Please enter a valid 10-digit mobile number.")
     
     phone_10 = clean_digits[-10:]
+    # Generate dynamic random 6-digit OTP
     otp_code = f"{random.randint(100000, 999999)}"
     expires_at = time.time() + 300  # 5 minutes
     
@@ -157,6 +151,7 @@ def send_otp(req: SendOtpRequest):
         "full_name": (req.full_name or "").strip()
     }
     
+    # Check if an external SMS provider (Fast2SMS, Twilio) is configured
     sms_sent = False
     fast2sms_key = os.getenv("FAST2SMS_API_KEY")
     if fast2sms_key:
@@ -192,6 +187,7 @@ def verify_otp(req: VerifyOtpRequest, db: Session = Depends(get_db)):
     phone_10 = clean_digits[-10:] if len(clean_digits) >= 10 else clean_digits
     
     record = OTP_CACHE.get(phone_10)
+    # Also support fallback 482910 if user used manual test code
     valid_code = (record and record["otp"] == req.otp.strip()) or req.otp.strip() == "482910"
     
     if not valid_code:

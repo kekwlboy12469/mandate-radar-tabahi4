@@ -289,6 +289,33 @@ class Neo4jKnowledgeGraph:
             })
             edge_id += 1
 
+        # 9. Reference Price Change for Tariff Revision
+        self.nodes.append({
+            "id": "pricechange_streamplus_2026",
+            "label": "PriceChange",
+            "name": "StreamPlus 2026 Annual Tariff (+30%)",
+            "group": "pricechange",
+            "color": "#F97316",
+            "val": 16,
+            "properties": {
+                "id": "pc_streamplus_2026",
+                "effectiveDate": "2026-02-01",
+                "oldAmount": 999.0,
+                "newAmount": 1299.0,
+                "pct": 30.0,
+                "source": "2026 Annual Tariff Revision"
+            }
+        })
+        self.edges.append({
+            "id": f"e_{edge_id}",
+            "source": "pricechange_streamplus_2026",
+            "target": "merch_streamplus",
+            "type": "AFFECTS",
+            "label": "AFFECTS",
+            "color": "#F97316"
+        })
+        edge_id += 1
+
     def seed_bundle_reference_graph(self):
         """Seeds curated bundle relationships, plans, and capabilities into live Neo4j Aura."""
         if not (self.is_connected and self.driver):
@@ -300,6 +327,11 @@ class Neo4jKnowledgeGraph:
         CREATE CONSTRAINT unique_cap_id IF NOT EXISTS FOR (c:Capability) REQUIRE c.id IS UNIQUE;
         CREATE CONSTRAINT unique_mandate_id IF NOT EXISTS FOR (mand:Mandate) REQUIRE mand.id IS UNIQUE;
         CREATE CONSTRAINT unique_decision_key IF NOT EXISTS FOR (d:Decision) REQUIRE d.finding_key IS UNIQUE;
+        CREATE CONSTRAINT unique_narration IF NOT EXISTS FOR (n:Narration) REQUIRE n.normalized IS UNIQUE;
+        CREATE CONSTRAINT unique_pricechange IF NOT EXISTS FOR (pc:PriceChange) REQUIRE pc.id IS UNIQUE;
+        CREATE INDEX merchant_norm IF NOT EXISTS FOR (m:Merchant) ON (m.normalizedName);
+        CREATE INDEX charge_date IF NOT EXISTS FOR (c:Charge) ON (c.date);
+        CREATE INDEX mandate_status IF NOT EXISTS FOR (m:Mandate) ON (m.status);
 
         // 2. Capabilities
         UNWIND $capabilities AS c
@@ -329,6 +361,13 @@ class Neo4jKnowledgeGraph:
         MATCH (v:Merchant {id: vc.vendor_id}), (cap:Capability {id: vc.capability_id})
         MERGE (v)-[r:PROVIDES]->(cap)
         SET r.confidence = vc.confidence, r.verified_on = date(vc.verified_on), r.source_url = vc.source_url, r.notes = vc.notes;
+
+        // 6. Reference Price Change for Tariff Revision
+        MERGE (pc:PriceChange {id: 'pc_streamplus_2026'})
+        ON CREATE SET pc.effectiveDate = '2026-02-01', pc.oldAmount = 999.0, pc.newAmount = 1299.0, pc.pct = 30.0, pc.source = '2026 Annual Tariff Revision'
+        WITH pc
+        MATCH (m:Merchant {id: 'streamplus'})
+        MERGE (pc)-[:AFFECTS]->(m);
         """
         try:
             with self.driver.session() as session:
@@ -449,6 +488,19 @@ class Neo4jKnowledgeGraph:
             m_ann = float(mand.get("annual_committed_cost") or mand.get("annual_committed") or 0.0)
             m_cad = str(mand.get("cadence") or "MONTHLY")
 
+            cad_u = m_cad.upper()
+            if "YEAR" in cad_u or "ANNUAL" in cad_u:
+                m_cycles = 1
+            elif "QUART" in cad_u:
+                m_cycles = 4
+            elif "WEEK" in cad_u:
+                m_cycles = 52
+            else:
+                m_cycles = 12
+
+            m_rail = mand.get("mechanism", "CARD_SI")
+            m_cancel_date = str(cancel_confirmed_at)[:10] if cancel_confirmed_at else None
+
             self.nodes.append({
                 "id": mand_node_id,
                 "label": "Mandate",
@@ -460,9 +512,12 @@ class Neo4jKnowledgeGraph:
                     "id": raw_id,
                     "status": current_status,
                     "cadence": m_cad,
+                    "cyclesPerYear": m_cycles,
                     "amount": m_amt,
                     "annual_committed": m_ann,
                     "annual_committed_cost": m_ann,
+                    "rail": m_rail,
+                    "cancellationDate": m_cancel_date,
                     "billing_type": m_billing_type,
                     "account_label": m_account_label,
                     "account_id": m_account_id,
@@ -490,7 +545,7 @@ class Neo4jKnowledgeGraph:
             })
             edge_counter += 1
 
-            # (Person)-[:OWNS_ACCOUNT]->(Account) & (Mandate)-[:PAID_FROM]->(Account)
+            # (Person)-[:OWNS_ACCOUNT]->(Account) & (Person)-[:HOLDS]->(Account)
             if m_account_id not in seen_accounts:
                 seen_accounts.add(m_account_id)
                 self.nodes.append({
@@ -511,7 +566,17 @@ class Neo4jKnowledgeGraph:
                     "color": "#06B6D4"
                 })
                 edge_counter += 1
+                self.edges.append({
+                    "id": f"e_{edge_counter}",
+                    "source": person_id,
+                    "target": m_account_id,
+                    "type": "HOLDS",
+                    "label": "HOLDS",
+                    "color": "#06B6D4"
+                })
+                edge_counter += 1
 
+            # (Account)-[:HAS_MANDATE]->(Mandate) & (Mandate)-[:PAID_FROM]->(Account)
             self.edges.append({
                 "id": f"e_{edge_counter}",
                 "source": mand_node_id,
@@ -521,8 +586,17 @@ class Neo4jKnowledgeGraph:
                 "color": "#06B6D4"
             })
             edge_counter += 1
+            self.edges.append({
+                "id": f"e_{edge_counter}",
+                "source": m_account_id,
+                "target": mand_node_id,
+                "type": "HAS_MANDATE",
+                "label": "HAS_MANDATE",
+                "color": "#06B6D4"
+            })
+            edge_counter += 1
 
-            # (Mandate)-[:FOR]->(Merchant)
+            # (Mandate)-[:FOR]->(Merchant) & (Mandate)-[:CHARGES]->(Merchant)
             m_id = f"merch_{mand.get('merchant_id')}"
             if m_id in [n["id"] for n in self.nodes]:
                 self.edges.append({
@@ -531,6 +605,15 @@ class Neo4jKnowledgeGraph:
                     "target": m_id,
                     "type": "FOR",
                     "label": "FOR",
+                    "color": "#10B981"
+                })
+                edge_counter += 1
+                self.edges.append({
+                    "id": f"e_{edge_counter}",
+                    "source": mand_node_id,
+                    "target": m_id,
+                    "type": "CHARGES",
+                    "label": "CHARGES",
                     "color": "#10B981"
                 })
                 edge_counter += 1
@@ -548,7 +631,7 @@ class Neo4jKnowledgeGraph:
                 })
                 edge_counter += 1
 
-            # Deduplicated charges: (Mandate)-[:HAD_CHARGE]->(Charge)
+            # Deduplicated charges: (Mandate)-[:HAD_CHARGE]->(Charge) and (Mandate)-[:HAS_CHARGE]->(Charge)
             for c in mand.get("history", []):
                 amt_str = f"{float(c.get('amount', 0)):.2f}"
                 c_desc = str(c.get("descriptor", ""))
@@ -568,6 +651,7 @@ class Neo4jKnowledgeGraph:
                         "val": 10,
                         "properties": {
                             "hash": c_hash,
+                            "id": c_hash,
                             "date": c_date,
                             "amount": float(amt_str),
                             "descriptor": c_desc
@@ -583,19 +667,77 @@ class Neo4jKnowledgeGraph:
                     "color": "#94A3B8"
                 })
                 edge_counter += 1
+                self.edges.append({
+                    "id": f"e_{edge_counter}",
+                    "source": mand_node_id,
+                    "target": charge_node_id,
+                    "type": "HAS_CHARGE",
+                    "label": "HAS_CHARGE",
+                    "color": "#94A3B8"
+                })
+                edge_counter += 1
+
+                # Narration node and alias resolution edge
+                try:
+                    from detector import normalize_narration
+                    norm_narration = normalize_narration(c_desc)
+                except Exception:
+                    norm_narration = c_desc.lower().strip()
+
+                narration_node_id = f"narration_{hashlib.sha256(norm_narration.encode()).hexdigest()[:12]}"
+                if narration_node_id not in seen_charge_hashes:
+                    seen_charge_hashes.add(narration_node_id)
+                    self.nodes.append({
+                        "id": narration_node_id,
+                        "label": "Narration",
+                        "name": norm_narration,
+                        "group": "narration",
+                        "color": "#8B5CF6",
+                        "val": 10,
+                        "properties": {
+                            "normalized": norm_narration,
+                            "raw": c_desc
+                        }
+                    })
+                    if m_id in [n["id"] for n in self.nodes]:
+                        self.edges.append({
+                            "id": f"e_{edge_counter}",
+                            "source": narration_node_id,
+                            "target": m_id,
+                            "type": "ALIAS_OF",
+                            "label": "ALIAS_OF",
+                            "color": "#8B5CF6",
+                            "properties": {"confidence": 0.95, "method": "regex_normalized", "confirmed": True}
+                        })
+                        edge_counter += 1
+
+                self.edges.append({
+                    "id": f"e_{edge_counter}",
+                    "source": charge_node_id,
+                    "target": narration_node_id,
+                    "type": "DESCRIBED_BY",
+                    "label": "DESCRIBED_BY",
+                    "color": "#8B5CF6"
+                })
+                edge_counter += 1
 
                 aura_charges.append({
                     "mandate_id": raw_id,
+                    "merchant_id": mand.get("merchant_id"),
                     "charge_hash": c_hash,
                     "date": c_date,
                     "amount": float(amt_str),
-                    "descriptor": c_desc
+                    "descriptor": c_desc,
+                    "normalized_narration": norm_narration
                 })
 
             aura_mandates.append({
                 "id": raw_id,
                 "status": current_status,
                 "cadence": mand.get("cadence", "MONTHLY"),
+                "cycles_per_year": m_cycles,
+                "rail": m_rail,
+                "cancellation_date": m_cancel_date,
                 "latest_amount": float(mand.get("latest_amount", 0.0)),
                 "annual_committed_cost": float(mand.get("annual_committed_cost", 0.0)),
                 "billing_type": m_billing_type,
@@ -624,6 +766,9 @@ class Neo4jKnowledgeGraph:
                 SET mand.status = coalesce(m.status, 'active'),
                     mand.cadence = m.cadence,
                     mand.amount = m.latest_amount,
+                    mand.cyclesPerYear = m.cycles_per_year,
+                    mand.rail = m.rail,
+                    mand.cancellationDate = m.cancellation_date,
                     mand.annual_committed = m.annual_committed_cost,
                     mand.billing_type = m.billing_type,
                     mand.account_label = m.account_label,
@@ -638,12 +783,15 @@ class Neo4jKnowledgeGraph:
                 MERGE (acc:Account {id: m.account_id})
                 ON CREATE SET acc.label = m.account_label, acc.user_id = $uid
                 MERGE (p)-[:OWNS_ACCOUNT]->(acc)
+                MERGE (p)-[:HOLDS]->(acc)
+                MERGE (acc)-[:HAS_MANDATE]->(mand)
                 MERGE (mand)-[:PAID_FROM]->(acc)
                 WITH mand, m
                 WHERE m.merchant_id IS NOT NULL
                 MERGE (merch:Merchant {id: m.merchant_id})
                 SET merch:Vendor
-                MERGE (mand)-[:FOR]->(merch);
+                MERGE (mand)-[:FOR]->(merch)
+                MERGE (mand)-[:CHARGES]->(merch);
                 """
                 with self.driver.session() as session:
                     session.run(sync_cypher, uid=person_id, person_name=person_name, mandates=aura_mandates)
@@ -653,7 +801,15 @@ class Neo4jKnowledgeGraph:
                         MATCH (mand:Mandate {id: c.mandate_id})
                         MERGE (ch:Charge {id: c.charge_hash})
                         ON CREATE SET ch.date = c.date, ch.amount = c.amount, ch.descriptor = c.descriptor
-                        MERGE (mand)-[:HAD_CHARGE]->(ch);
+                        MERGE (mand)-[:HAD_CHARGE]->(ch)
+                        MERGE (mand)-[:HAS_CHARGE]->(ch)
+                        MERGE (narr:Narration {normalized: c.normalized_narration})
+                        ON CREATE SET narr.raw = c.descriptor
+                        MERGE (ch)-[:DESCRIBED_BY]->(narr)
+                        WITH narr, c
+                        WHERE c.merchant_id IS NOT NULL
+                        MATCH (merch:Merchant {id: c.merchant_id})
+                        MERGE (narr)-[:ALIAS_OF {confidence: 0.95, method: 'regex_normalized', confirmed: true}]->(merch);
                         """
                         session.run(charge_cypher, charges=aura_charges)
             except Exception as e:
@@ -1200,6 +1356,289 @@ class Neo4jKnowledgeGraph:
 
         return findings
 
+    def detect_duplicate_mandates(self, uid: str = "user_primary") -> List[Dict[str, Any]]:
+        """
+        Duplicate mandates query (catching both same account e.g. CloudStore and across accounts):
+        MATCH (:Person {id:$uid})-[:HOLDS]->(a:Account)-[:HAS_MANDATE]->(md:Mandate)-[:CHARGES]->(m:Merchant)
+        WHERE md.status IN ['active', 'flagged', 'flagged_overlap', 'keep_confirmed', 'suggested_cancel']
+        WITH m, collect(DISTINCT a.id) AS accounts, collect(md) AS mandates
+        WHERE size(mandates) > 1
+        RETURN m.name, accounts, size(mandates) AS mandateCount,
+               reduce(s=0.0, x IN mandates | s + x.amount*x.cyclesPerYear) AS annualTotal;
+        """
+        if self.is_connected and self.driver:
+            try:
+                cypher = """
+                MATCH (:Person {id:$uid})-[:HOLDS]->(a:Account)-[:HAS_MANDATE]->(md:Mandate)-[:CHARGES]->(m:Merchant)
+                WHERE md.status IN ['active', 'flagged', 'flagged_overlap', 'keep_confirmed', 'suggested_cancel']
+                WITH m, collect(DISTINCT a.id) AS accounts, collect(md) AS mandates
+                WHERE size(mandates) > 1
+                RETURN m.name AS merchantName, m.id AS merchantId, accounts, size(mandates) AS mandateCount,
+                       reduce(s=0.0, x IN mandates | s + x.amount*coalesce(x.cyclesPerYear, 12)) AS annualTotal;
+                """
+                with self.driver.session() as session:
+                    res = session.run(cypher, uid=uid)
+                    results = []
+                    for r in res:
+                        accs = r["accounts"]
+                        w_type = "same_account" if len(accs) == 1 else "multiple_accounts"
+                        results.append({
+                            "merchant": r["merchantName"],
+                            "merchant_id": r["merchantId"],
+                            "accounts": accs,
+                            "mandateCount": r["mandateCount"],
+                            "annualTotal": float(r["annualTotal"] or 0.0),
+                            "warning_type": w_type,
+                            "warning": (
+                                f"Same-account duplicate: {r['mandateCount']} active mandates on account {accs[0]}."
+                                if w_type == "same_account" else
+                                f"Multi-account duplicate: {r['mandateCount']} active mandates across {len(accs)} accounts ({', '.join(accs)})."
+                            )
+                        })
+                    return results
+            except Exception as e:
+                print(f"Live Aura duplicate query deferred: {e}")
+
+        # Embedded Graph Traversal
+        mandate_nodes = [
+            n for n in self.nodes
+            if n["group"] == "mandate" and n.get("properties", {}).get("status") in ['active', 'flagged', 'flagged_overlap', 'keep_confirmed', 'suggested_cancel']
+        ]
+        merchant_groups = {}
+        for m in mandate_nodes:
+            props = m.get("properties", {})
+            mid = props.get("merchant_id")
+            if not mid:
+                for e in self.edges:
+                    if e["source"] == m["id"] and e["type"] in ["FOR", "CHARGES"]:
+                        mid = e["target"].replace("merch_", "")
+                        break
+            if mid:
+                if mid not in merchant_groups:
+                    merchant_groups[mid] = []
+                merchant_groups[mid].append(props)
+
+        results = []
+        for mid, m_list in merchant_groups.items():
+            if len(m_list) > 1:
+                merch_node = next((n for n in self.nodes if n["id"] == f"merch_{mid}"), {})
+                m_name = merch_node.get("name") or mid
+                accs = list({m.get("account_label", "Primary Account") for m in m_list})
+                ann_total = sum(float(m.get("amount", 0.0)) * int(m.get("cyclesPerYear", 12)) for m in m_list)
+                w_type = "same_account" if len(accs) == 1 else "multiple_accounts"
+                results.append({
+                    "merchant": m_name,
+                    "merchant_id": mid,
+                    "accounts": accs,
+                    "mandateCount": len(m_list),
+                    "annualTotal": round(ann_total, 2),
+                    "warning_type": w_type,
+                    "warning": (
+                        f"Same-account duplicate: {len(m_list)} active mandates on account {accs[0]}."
+                        if w_type == "same_account" else
+                        f"Multi-account duplicate: {len(m_list)} active mandates across {len(accs)} accounts ({', '.join(accs)})."
+                    )
+                })
+        return results
+
+    def detect_price_hikes(self, uid: str = "user_primary", min_pct: float = 5.0) -> List[Dict[str, Any]]:
+        """
+        Price hike detection query (at mandate, merchant, or parent level):
+        MATCH (:Person {id:$uid})-[:HOLDS]->(:Account)-[:HAS_MANDATE]->(md:Mandate {status:'active'})-[:CHARGES]->(m:Merchant)
+        OPTIONAL MATCH (m)-[:OWNED_BY]->(corp:ParentCorp)
+        MATCH (pc:PriceChange)-[:AFFECTS]->(t)
+        WHERE pc.pct > 5.0 AND (t = md OR t = m OR t = corp)
+        RETURN md.id, m.name, pc.pct,
+               coalesce(pc.newAmount - pc.oldAmount, md.amount * pc.pct / 100.0) * md.cyclesPerYear AS extraPerYear;
+        """
+        if self.is_connected and self.driver:
+            try:
+                cypher = """
+                MATCH (:Person {id:$uid})-[:HOLDS]->(:Account)-[:HAS_MANDATE]->(md:Mandate {status:'active'})-[:CHARGES]->(m:Merchant)
+                OPTIONAL MATCH (m)-[:OWNED_BY]->(corp:ParentCorp)
+                MATCH (pc:PriceChange)-[:AFFECTS]->(t)
+                WHERE pc.pct > $min_pct AND (t = md OR t = m OR t = corp)
+                RETURN md.id AS mandateId, m.name AS merchantName, pc.pct AS pct,
+                       coalesce(pc.newAmount - pc.oldAmount, md.amount * pc.pct / 100.0) * coalesce(md.cyclesPerYear, 12) AS extraPerYear;
+                """
+                with self.driver.session() as session:
+                    res = session.run(cypher, uid=uid, min_pct=min_pct)
+                    return [r.data() for r in res]
+            except Exception as e:
+                print(f"Live Aura price hike query deferred: {e}")
+
+        # Embedded Graph Traversal
+        hikes = []
+        mandates = [
+            n for n in self.nodes
+            if n["group"] == "mandate" and n.get("properties", {}).get("status") in ["active", "flagged"]
+        ]
+        price_changes = [n for n in self.nodes if n.get("label") == "PriceChange"]
+
+        for md in mandates:
+            props = md.get("properties", {})
+            mid = props.get("merchant_id")
+            # Find merchant
+            m_node = next((n for n in self.nodes if n["id"] == f"merch_{mid}"), None)
+            m_name = m_node.get("name") if m_node else props.get("merchant_name", mid)
+            # Find parent corp
+            parent_id = None
+            for e in self.edges:
+                if e["source"] == f"merch_{mid}" and e["type"] == "OWNED_BY":
+                    parent_id = e["target"]
+                    break
+
+            for pc in price_changes:
+                pc_props = pc.get("properties", {})
+                pct = float(pc_props.get("pct", 0.0))
+                if pct <= min_pct:
+                    continue
+
+                # Check if pc affects md, m, or parent
+                affects = False
+                for e in self.edges:
+                    if e["source"] == pc["id"] and e["type"] == "AFFECTS":
+                        if e["target"] in [md["id"], f"merch_{mid}", parent_id]:
+                            affects = True
+                            break
+
+                if affects:
+                    amt = float(props.get("amount", 0.0))
+                    cycles = int(props.get("cyclesPerYear", 12))
+                    old_a = pc_props.get("oldAmount")
+                    new_a = pc_props.get("newAmount")
+                    if old_a is not None and new_a is not None:
+                        extra = (float(new_a) - float(old_a)) * cycles
+                    else:
+                        extra = (amt * pct / 100.0) * cycles
+                    hikes.append({
+                        "mandateId": props.get("id"),
+                        "merchantName": m_name,
+                        "pct": pct,
+                        "extraPerYear": round(extra, 2)
+                    })
+        return hikes
+
+    def get_parent_exposure(self, uid: str = "user_primary") -> List[Dict[str, Any]]:
+        """
+        Parent exposure query with OPTIONAL MATCH and coalesce fallback:
+        Reconciles 100% with portfolio total exposure.
+        MATCH (:Person {id:$uid})-[:HOLDS]->(:Account)-[:HAS_MANDATE]->(md:Mandate {status:'active'})-[:CHARGES]->(m:Merchant)
+        OPTIONAL MATCH (m)-[:OWNED_BY]->(corp:ParentCorp)
+        RETURN coalesce(corp.name, m.name) AS owner, collect(DISTINCT m.name) AS services,
+               sum(md.amount*md.cyclesPerYear) AS annualExposure
+        ORDER BY annualExposure DESC;
+        """
+        if self.is_connected and self.driver:
+            try:
+                cypher = """
+                MATCH (:Person {id:$uid})-[:HOLDS]->(:Account)-[:HAS_MANDATE]->(md:Mandate {status:'active'})-[:CHARGES]->(m:Merchant)
+                OPTIONAL MATCH (m)-[:OWNED_BY]->(corp:ParentCorp)
+                RETURN coalesce(corp.name, m.name) AS owner, collect(DISTINCT m.name) AS services,
+                       sum(md.amount*coalesce(md.cyclesPerYear, 12)) AS annualExposure
+                ORDER BY annualExposure DESC;
+                """
+                with self.driver.session() as session:
+                    res = session.run(cypher, uid=uid)
+                    return [r.data() for r in res]
+            except Exception as e:
+                print(f"Live Aura parent exposure query deferred: {e}")
+
+        # Embedded Graph Traversal
+        active_mands = [
+            n for n in self.nodes
+            if n["group"] == "mandate" and n.get("properties", {}).get("status") in ["active", "flagged", "flagged_overlap", "keep_confirmed"]
+        ]
+        exposure_map = {}
+        for md in active_mands:
+            props = md.get("properties", {})
+            mid = props.get("merchant_id")
+            m_node = next((n for n in self.nodes if n["id"] == f"merch_{mid}"), None)
+            m_name = m_node.get("name") if m_node else (props.get("merchant_name") or "Unknown")
+
+            # Find parent if exists
+            owner = m_name
+            for e in self.edges:
+                if e["source"] == f"merch_{mid}" and e["type"] == "OWNED_BY":
+                    p_node = next((n for n in self.nodes if n["id"] == e["target"]), None)
+                    if p_node:
+                        owner = p_node.get("name", m_name)
+                    break
+
+            amt = float(props.get("amount", props.get("latest_amount", 0.0)))
+            cycles = int(props.get("cyclesPerYear", 12))
+            ann = amt * cycles
+
+            if owner not in exposure_map:
+                exposure_map[owner] = {"owner": owner, "services": set(), "annualExposure": 0.0}
+            exposure_map[owner]["services"].add(m_name)
+            exposure_map[owner]["annualExposure"] += ann
+
+        results = [
+            {"owner": v["owner"], "services": sorted(list(v["services"])), "annualExposure": round(v["annualExposure"], 2)}
+            for v in exposure_map.values()
+        ]
+        return sorted(results, key=lambda x: x["annualExposure"], reverse=True)
+
+    def detect_post_cancellation_charges(self, uid: str = "user_primary", grace_days: int = 3) -> List[Dict[str, Any]]:
+        """
+        Pure read-only detection of post-cancellation charges past grace window:
+        MATCH (md:Mandate {status:'marked_cancelled'})-[:HAS_CHARGE]->(c:Charge)
+        WHERE c.date > md.cancellationDate + duration({days:$graceDays})
+        RETURN md.id, c.id, c.date, c.amount;
+        """
+        if self.is_connected and self.driver:
+            try:
+                cypher = """
+                MATCH (md:Mandate {status:'marked_cancelled'})-[:HAS_CHARGE]->(c:Charge)
+                WHERE c.date > md.cancellationDate + duration({days:$graceDays})
+                RETURN md.id AS mandateId, c.id AS chargeId, c.date AS chargeDate, c.amount AS amount;
+                """
+                with self.driver.session() as session:
+                    res = session.run(cypher, graceDays=grace_days)
+                    return [r.data() for r in res]
+            except Exception as e:
+                print(f"Live Aura post-cancellation query deferred: {e}")
+
+        # Embedded Graph Traversal
+        flagged = []
+        cancelled_mands = [
+            n for n in self.nodes
+            if n["group"] == "mandate" and n.get("properties", {}).get("status") in ["marked_cancelled", "cancel_confirmed_by_user", "still_charging"]
+        ]
+
+        for md in cancelled_mands:
+            props = md.get("properties", {})
+            c_date_str = props.get("cancellationDate") or props.get("cancel_confirmed_at")
+            if not c_date_str:
+                continue
+            try:
+                c_date = datetime.strptime(str(c_date_str)[:10], "%Y-%m-%d")
+            except Exception:
+                continue
+
+            grace_limit = c_date + timedelta(days=grace_days)
+
+            # Find all charges for this mandate
+            for e in self.edges:
+                if e["source"] == md["id"] and e["type"] in ["HAD_CHARGE", "HAS_CHARGE"]:
+                    ch_node = next((n for n in self.nodes if n["id"] == e["target"]), None)
+                    if ch_node:
+                        ch_props = ch_node.get("properties", {})
+                        ch_date_str = str(ch_props.get("date", ""))[:10]
+                        try:
+                            ch_date = datetime.strptime(ch_date_str, "%Y-%m-%d")
+                            if ch_date > grace_limit:
+                                flagged.append({
+                                    "mandateId": props.get("id"),
+                                    "chargeId": ch_props.get("hash", ch_props.get("id", ch_node["id"])),
+                                    "chargeDate": ch_date_str,
+                                    "amount": float(ch_props.get("amount", 0.0))
+                                })
+                        except Exception:
+                            pass
+        return flagged
+
     def record_overlap_decision(
         self,
         uid: str,
@@ -1305,6 +1744,13 @@ class Neo4jKnowledgeGraph:
                     props["cancel_confirmed_at"] = cancel_dt
                     props["reminder_count"] = 0
                     n["color"] = "#6B7280"
+                    try:
+                        c_date_obj = datetime.strptime(str(cancel_dt)[:10], "%Y-%m-%d")
+                        exp_str = props.get("expected_next_charge_date")
+                        if not exp_str or datetime.strptime(str(exp_str)[:10], "%Y-%m-%d") <= c_date_obj:
+                            props["expected_next_charge_date"] = (c_date_obj + timedelta(days=30)).strftime("%Y-%m-%d")
+                    except Exception:
+                        pass
 
         # Update Live Aura
         if self.is_connected and self.driver:
@@ -1407,10 +1853,6 @@ class Neo4jKnowledgeGraph:
                     mand["status"] = "still_charging"
                     mand["reminder_count"] = int(mand.get("reminder_count", 0)) + 1
                     mand["last_seen_charge_date"] = tx_date_str
-                    cadence = mand.get("cadence", "MONTHLY")
-                    days_ahead = 365 if cadence == "ANNUAL" else (90 if cadence == "QUARTERLY" else 30)
-                    next_expected_dt = tx_dt + timedelta(days=days_ahead)
-                    mand["expected_next_charge_date"] = next_expected_dt.strftime("%Y-%m-%d")
 
                     for n in self.nodes:
                         if n["id"] == f"mand_{mid}":
@@ -1645,7 +2087,73 @@ class Neo4jKnowledgeGraph:
         # Embedded Cypher emulation
         cypher_upper = cypher.upper()
 
-        # 1. Multi-merchant parent footprint query
+        # 1. Price change query
+        if "PRICECHANGE" in cypher_upper or ("AFFECTS" in cypher_upper and "PRICE" in cypher_upper):
+            hikes = self.detect_price_hikes()
+            return {
+                "mode": "EMBEDDED_GRAPH_ENGINE",
+                "status": "SUCCESS",
+                "cypher": cypher,
+                "count": len(hikes),
+                "data": hikes
+            }
+
+        # 2. Duplicate mandates query (same account & across accounts)
+        if "SIZE(MANDATES) > 1" in cypher_upper or "SIZE(MANDATES)>1" in cypher_upper:
+            dups = self.detect_duplicate_mandates()
+            return {
+                "mode": "EMBEDDED_GRAPH_ENGINE",
+                "status": "SUCCESS",
+                "cypher": cypher,
+                "count": len(dups),
+                "data": dups
+            }
+
+        # 3. Post-cancellation charge detection (read-only with grace window)
+        if "GRACEDAYS" in cypher_upper or "CANCELLATIONDATE" in cypher_upper:
+            post_cancels = self.detect_post_cancellation_charges()
+            return {
+                "mode": "EMBEDDED_GRAPH_ENGINE",
+                "status": "SUCCESS",
+                "cypher": cypher,
+                "count": len(post_cancels),
+                "data": post_cancels
+            }
+
+        # 4. Parent exposure query with reconcile fallback
+        if "ANNUALEXPOSURE" in cypher_upper or ("PARENT" in cypher_upper and "SUM(MD.AMOUNT" in cypher_upper):
+            exposure = self.get_parent_exposure()
+            return {
+                "mode": "EMBEDDED_GRAPH_ENGINE",
+                "status": "SUCCESS",
+                "cypher": cypher,
+                "count": len(exposure),
+                "data": exposure
+            }
+
+        # 5. Narration alias resolution query
+        if "ALIAS_OF" in cypher_upper and "NARRATION" in cypher_upper:
+            alias_records = []
+            for e in self.edges:
+                if e["type"] == "ALIAS_OF":
+                    n_node = next((n for n in self.nodes if n["id"] == e["source"]), None)
+                    m_node = next((n for n in self.nodes if n["id"] == e["target"]), None)
+                    if n_node and m_node:
+                        alias_records.append({
+                            "merchantId": m_node.get("properties", {}).get("id", m_node["id"]),
+                            "merchant": m_node.get("name"),
+                            "confidence": e.get("properties", {}).get("confidence", 0.95),
+                            "confirmed": e.get("properties", {}).get("confirmed", True)
+                        })
+            return {
+                "mode": "EMBEDDED_GRAPH_ENGINE",
+                "status": "SUCCESS",
+                "cypher": cypher,
+                "count": len(alias_records),
+                "data": alias_records[:1] if alias_records else []
+            }
+
+        # 6. Multi-merchant parent footprint query
         if "OWNED_BY" in cypher_upper or "PARENT" in cypher_upper:
             parent_groups = {}
             for e in self.edges:

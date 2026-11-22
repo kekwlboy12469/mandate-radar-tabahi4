@@ -166,7 +166,7 @@ export function MandateDrawer({
     }
   }
 
-  const defaultNotice = emailBody || `To: ${m.support_email || 'support@merchant.com'}\nSubject: Notice of Mandate Revocation: ${m.merchant_name} [${m.descriptor}]\n\nDear Customer Support Team,\n\nPlease terminate the recurring auto-debit standing instruction registered for ${m.merchant_name} (Descriptor: ${m.descriptor}) effective immediately.\n\nPer RBI Master Direction on Recurring Transactions (RBI/2019-20/53), I hereby withdraw consent for subsequent debits on my account.\n\nAccount Holder: ${userName}\nMandate Ref: ${m.descriptor}\n\nKindly confirm revocation of this instruction at the earliest.\n\nSincerely,\n${userName}`
+  const defaultNotice = emailBody || `To: ${m.support_email || 'support@merchant.com'}\nSubject: Notice of Mandate Revocation: ${m.merchant_name} [${m.descriptor}]\n\nDear Customer Support Team,\n\nPlease terminate the recurring auto-debit standing instruction registered for ${m.merchant_name} (Descriptor: ${m.descriptor}) effective immediately.\n\nPer the RBI Digital Payments e-mandate framework, I hereby withdraw consent for subsequent debits on my account.\n\nAccount Holder: ${userName}\nMandate Ref: ${m.descriptor}\n\nKindly confirm revocation of this instruction at the earliest.\n\nSincerely,\n${userName}`
 
   const isAlreadyMarked = m.status === 'marked_cancelled' || cancelledSuccess
   const isVerifiedCancelled = m.status === 'verified_cancelled'
@@ -221,7 +221,7 @@ export function MandateDrawer({
               {isAlreadyMarked && !isVerifiedCancelled && !isStillCharging && (
                 <span className="px-2.5 py-0.5 rounded-full text-xs font-bold bg-amber-950/80 text-amber-300 border border-amber-500/50 flex items-center gap-1">
                   <Clock className="w-3 h-3 text-amber-400" />
-                  Marked Cancelled
+                  Cancelled
                 </span>
               )}
               {m.status === 'suggested_cancel' && !isAlreadyMarked && (
@@ -284,10 +284,10 @@ export function MandateDrawer({
           <div className="p-4 rounded-xl border border-amber-500/40 bg-amber-950/40 text-xs text-amber-200 space-y-1">
             <div className="flex items-center gap-2 font-bold text-amber-300 text-sm">
               <Clock className="w-4 h-4 text-amber-400 shrink-0" />
-              <span>MARKED CANCELLED · AWAITING RECONCILIATION</span>
+              <span>CANCELLED · AWAITING RECONCILIATION</span>
             </div>
             <p className="leading-relaxed text-amber-200/90">
-              Marked cancelled on {m.marked_cancelled_on || 'recently'}. Upload your next bank statement to automatically verify zero subsequent debits.
+              Cancelled on {m.marked_cancelled_on || 'recently'}. Upload your next bank statement to automatically verify zero subsequent debits.
             </p>
           </div>
         )}
@@ -361,7 +361,7 @@ export function MandateDrawer({
             ) : isAlreadyMarked ? (
               <div className="w-full py-2.5 px-3 rounded-xl bg-amber-950/50 border border-amber-500/40 text-xs text-amber-300 font-semibold flex items-center justify-center gap-2">
                 <Clock className="w-4 h-4 text-amber-400" />
-                <span>Marked Cancelled ({m.marked_cancelled_on || 'Today'}) · Awaiting Statement Verification</span>
+                <span>Cancelled ({m.marked_cancelled_on || 'Today'}) · Awaiting Statement Verification</span>
               </div>
             ) : (
               <button
