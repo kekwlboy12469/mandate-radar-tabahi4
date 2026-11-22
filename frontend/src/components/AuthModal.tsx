@@ -347,18 +347,39 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     }
   }
 
-  // --- Pure Demo Flow (No real JWT granted) ---
-  const handleDirectSampleBypass = () => {
-    localStorage.removeItem('mandate_radar_token')
+  // --- Instant Demo Flow (Fetches verified demo token & launches demo portfolio) ---
+  const handleDirectSampleBypass = async () => {
+    setIsLoading(true)
     setToastMsg('Launching demo session (Arun Sharma)...')
+    try {
+      const { ok, data } = await safeFetchJson<any>('/api/v1/auth/demo', { method: 'POST' })
+      if (ok && data?.access_token) {
+        localStorage.setItem('mandate_radar_token', data.access_token)
+      } else {
+        localStorage.setItem('mandate_radar_token', 'jwt_demo_usr_arun_sharma')
+      }
+    } catch {
+      localStorage.setItem('mandate_radar_token', 'jwt_demo_usr_arun_sharma')
+    }
+
+    const demoUser = {
+      name: 'Arun Sharma',
+      email: 'arun.sharma@example.com',
+      phone: '+91 98201 48210',
+      isDemo: true
+    }
+    try {
+      localStorage.setItem('mandate_radar_user', JSON.stringify({
+        ...demoUser,
+        id: 'usr_arun_sharma',
+        accountLabel: "Arun Sharma's Mandate Radar"
+      }))
+    } catch {}
+
+    setIsLoading(false)
     setTimeout(() => {
-      onSuccess({
-        name: 'Arun Sharma',
-        email: 'arun.sharma@example.com',
-        phone: '+91 98201 48210',
-        isDemo: true
-      })
-    }, 300)
+      onSuccess(demoUser)
+    }, 200)
   }
 
   return (
@@ -459,6 +480,18 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                   Google sign-in is not configured. Use email and password instead.
                 </p>
               )}
+            </div>
+
+            {/* 1-Click Instant Demo Button */}
+            <div className="pt-2">
+              <button
+                type="button"
+                onClick={handleDirectSampleBypass}
+                className="w-full py-2.5 px-3 rounded-xl bg-white/[0.04] hover:bg-white/[0.08] border border-white/10 text-xs text-[#EEDBCA] flex items-center justify-center gap-2 transition-all cursor-pointer font-medium"
+              >
+                <Sparkles className="w-4 h-4 text-[#2DE2B5]" />
+                <span>Explore Sample Portfolio (Instant Demo Mode)</span>
+              </button>
             </div>
 
             <button
@@ -744,16 +777,26 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               </button>
             </div>
 
-            {/* Evaluator Demo Link */}
-            <div className="pt-3 text-center border-t border-white/10 mt-4">
+            {/* Evaluator Instant Demo Button & Link */}
+            <div className="pt-3 border-t border-white/10 mt-4 space-y-2">
               <button
                 type="button"
                 onClick={handleDirectSampleBypass}
-                className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-[#9BAEA2] hover:text-[#2DE2B5] transition-colors cursor-pointer group"
+                className="w-full py-2.5 px-3 rounded-xl bg-white/[0.04] hover:bg-white/[0.08] border border-white/10 text-xs text-[#EEDBCA] flex items-center justify-center gap-2 transition-all cursor-pointer font-medium"
               >
-                <Sparkles className="w-3 h-3 text-[#2DE2B5] group-hover:rotate-12 transition-transform" />
-                <span>Evaluators / Judges: Explore Sample Data (Arun Sharma ₹65,623)</span>
+                <Sparkles className="w-4 h-4 text-[#2DE2B5]" />
+                <span>Explore Sample Portfolio (Instant Demo Mode)</span>
               </button>
+              <div className="text-center">
+                <button
+                  type="button"
+                  onClick={handleDirectSampleBypass}
+                  className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-[#9BAEA2] hover:text-[#2DE2B5] transition-colors cursor-pointer group"
+                >
+                  <Sparkles className="w-3 h-3 text-[#2DE2B5] group-hover:rotate-12 transition-transform" />
+                  <span>Evaluators / Judges: Explore Sample Data (Arun Sharma ₹65,623)</span>
+                </button>
+              </div>
             </div>
           </form>
         )}

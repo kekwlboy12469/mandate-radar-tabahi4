@@ -172,6 +172,25 @@ def login_user(request: Request, req: LoginRequest, db: Session = Depends(get_db
         is_demo=False
     )
 
+@router.post("/demo", response_model=TokenResponse)
+def demo_auth_endpoint(db: Session = Depends(get_db)):
+    """Provides instant verified demo token for Arun Sharma evaluation without password."""
+    arun = db.query(User).filter(User.email == "arun.sharma@example.com").first()
+    user_id = arun.id if arun else "usr_arun_sharma"
+    token = create_access_token({
+        "sub": user_id,
+        "email": "arun.sharma@example.com",
+        "full_name": "Arun Sharma"
+    })
+    return TokenResponse(
+        access_token=token,
+        token_type="bearer",
+        user_id=user_id,
+        email="arun.sharma@example.com",
+        full_name="Arun Sharma",
+        is_demo=True
+    )
+
 @router.post("/otp/send")
 @limiter.limit("3/minute")
 def send_otp(request: Request, req: SendOtpRequest):

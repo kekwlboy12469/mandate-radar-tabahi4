@@ -112,6 +112,7 @@ export const DashboardLayout: React.FC<DashboardLayoutProps> = ({
   React.useEffect(() => {
     setLocalMandates(mandates)
   }, [mandates])
+  const [userName, setUserName] = useState(user?.name || 'Rahul Sharma')
 
   // Build dynamic Neo4j graph reflecting active user mandates
   const dynamicGraph = React.useMemo(() => {
@@ -312,7 +313,6 @@ export const DashboardLayout: React.FC<DashboardLayoutProps> = ({
 
   // Active User Context
   const userId = user?.id || 'usr_primary'
-  const [userName, setUserName] = useState(user?.name || 'Rahul Sharma')
   const [userEmail, setUserEmail] = useState(user?.email || 'rahul.sharma@example.com')
   const [userPhone, setUserPhone] = useState(user?.phone || '+91 98201 48210')
   const [userCity, setUserCity] = useState('Bengaluru, Karnataka')

@@ -6,7 +6,6 @@ import { MoneliqLandingPage } from './components/MoneliqLandingPage'
 import { AuthModal } from './components/AuthModal'
 import { DesignSystemShowcase } from './components/DesignSystemShowcase'
 import { SAMPLE_MANDATES, SAMPLE_HERO_METRICS } from './lib/sampleData'
-import { safeFetchJson } from './lib/api'
 import type { GraphNode, GraphEdge } from './components/GraphCanvas'
 import { CheckCircle2, Info } from 'lucide-react'
 
@@ -126,41 +125,44 @@ export default function App() {
 
   useEffect(() => {
     if (isDemoAccount(currentUser)) {
-      fetchInitialData(currentUser)
-    }
-    loadSampleGraph(currentUser?.name && currentUser.name !== 'New User' ? currentUser.name : 'Rahul Sharma')
-  }, [currentUser?.name])
-
-  const fetchInitialData = async (userToFetch = currentUser) => {
-    if (!isDemoAccount(userToFetch)) {
-      setMandates([])
-      setHeroMetrics(EMPTY_HERO_METRICS)
-      return
-    }
-
-    try {
-      const token = localStorage.getItem('mandate_radar_token')
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' }
-      if (token) {
-        headers['Authorization'] = `Bearer ${token}`
-      }
-      const { ok, data } = await safeFetchJson<any>('/api/analyze', {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({
-          user_name: userToFetch.name,
-          user_id: userToFetch.id
-        })
-      })
-      if (!ok || !data) throw new Error('API offline')
-      if (data.mandates && data.mandates.length > 0) {
-        setMandates(data.mandates)
-        setHeroMetrics(data.hero_metrics || SAMPLE_HERO_METRICS)
-      }
-    } catch {
       setMandates(SAMPLE_MANDATES)
       setHeroMetrics(SAMPLE_HERO_METRICS)
     }
+    loadSampleGraph(currentUser?.name && currentUser.name !== 'New User' ? currentUser.name : 'Rahul Sharma')
+  }, [currentUser?.name, currentUser?.isDemo])
+
+  const handleLaunchDemo = async () => {
+    const demoUser = {
+      id: 'usr_arun_sharma',
+      name: 'Arun Sharma',
+      email: 'arun.sharma@example.com',
+      phone: '+91 98201 48210',
+      accountLabel: "Arun Sharma's Mandate Radar",
+      isDemo: true
+    }
+    try {
+      localStorage.setItem('mandate_radar_user', JSON.stringify(demoUser))
+    } catch {}
+
+    try {
+      const { ok, data } = await safeFetchJson<any>('/api/v1/auth/demo', { method: 'POST' })
+      if (ok && data?.access_token) {
+        localStorage.setItem('mandate_radar_token', data.access_token)
+      } else {
+        localStorage.setItem('mandate_radar_token', 'jwt_demo_usr_arun_sharma')
+      }
+    } catch {
+      localStorage.setItem('mandate_radar_token', 'jwt_demo_usr_arun_sharma')
+    }
+
+    setCurrentUser(demoUser)
+    setMandates(SAMPLE_MANDATES)
+    setHeroMetrics(SAMPLE_HERO_METRICS)
+    loadSampleGraph('Arun Sharma')
+    setCancelledIds(new Set())
+    setAuthModalOpen(false)
+    setStage('dashboard')
+    setToastNotification('Demo portfolio loaded (10 mandates, ₹65,623/year).')
   }
 
   const handleAuthSuccess = (u?: { name: string; email: string; phone?: string; isDemo?: boolean }) => {
@@ -182,6 +184,7 @@ export default function App() {
       if (isDemo) {
         setMandates(SAMPLE_MANDATES)
         setHeroMetrics(SAMPLE_HERO_METRICS)
+        loadSampleGraph(u.name || 'Arun Sharma')
         setToastNotification(`Welcome back, ${u.name}! Pre-seeded portfolio loaded.`)
       } else {
         // Brand new user: clear hardcoded sample mandates so they see clean state!
@@ -256,7 +259,7 @@ export default function App() {
             setAuthModalMode(mode)
             setAuthModalOpen(true)
           }}
-          onLaunchDashboard={() => setStage('dashboard')}
+          onLaunchDashboard={handleLaunchDemo}
           onOpenDesignSystem={() => setShowDesignSystem(true)}
         />
       )}

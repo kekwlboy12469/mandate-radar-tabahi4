@@ -182,7 +182,7 @@ export const MoneliqLandingPage: React.FC<MoneliqLandingPageProps> = ({
                 className="pill-fernwood-green flex items-center justify-center gap-2 cursor-pointer"
               >
                 <Sparkles className="w-3.5 h-3.5 text-[#2DE2B5]" />
-                <span>Explore sample data (₹65,623)</span>
+                <span>Explore Sample Portfolio (Instant Demo Mode)</span>
               </button>
             </div>
           </div>
@@ -707,7 +707,7 @@ export const MoneliqLandingPage: React.FC<MoneliqLandingPageProps> = ({
                   className="pill-fernwood-green flex items-center justify-center gap-2 cursor-pointer"
                 >
                   <Sparkles className="w-3.5 h-3.5 text-[#2DE2B5]" />
-                  <span>Explore sample data (₹65,623)</span>
+                  <span>Explore Sample Portfolio (Instant Demo Mode)</span>
                 </button>
               </div>
             </div>
